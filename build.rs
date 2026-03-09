@@ -78,7 +78,7 @@ fn get_lbug_root() -> PathBuf {
 
     let lbug_dir = manifest_dir.join("lbug-src");
     if !lbug_dir.exists() {
-        let version = std::env::var("LBUG_VERSION").unwrap_or_else(|| "main".to_string());
+        let version = std::env::var("LBUG_VERSION").unwrap_or_else(|_| "main".to_string());
         println!("Downloading ladybug source version {version}...");
         let url = if version.starts_with('v') {
             format!(
@@ -109,6 +109,7 @@ fn get_lbug_root() -> PathBuf {
         std::process::Command::new("tar")
             .args(["-xzf", "ladybug.tar.gz", "--strip-components=1"])
             .current_dir(manifest_dir)
+            .status()
             .expect("Failed to extract ladybug source");
 
         std::fs::remove_file(manifest_dir.join("ladybug.tar.gz")).ok();
