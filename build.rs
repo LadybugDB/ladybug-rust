@@ -67,7 +67,8 @@ fn link_libraries() {
 }
 
 fn get_lbug_root() -> PathBuf {
-    let manifest_dir = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest_dir_str = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let manifest_dir = Path::new(&manifest_dir_str);
     let root = manifest_dir.join("lbug-src");
     if root.is_symlink() || root.is_dir() {
         return root;
