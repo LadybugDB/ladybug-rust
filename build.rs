@@ -107,8 +107,15 @@ fn get_lbug_root() -> PathBuf {
             panic!("Failed to download ladybug source from {}", url);
         }
 
+        std::fs::create_dir_all(&lbug_dir).expect("Failed to create lbug-src directory");
         std::process::Command::new("tar")
-            .args(["-xzf", "ladybug.tar.gz", "--strip-components=1"])
+            .args([
+                "-xzf",
+                "ladybug.tar.gz",
+                "--strip-components=1",
+                "-C",
+                "lbug-src",
+            ])
             .current_dir(manifest_dir)
             .status()
             .expect("Failed to extract ladybug source");
