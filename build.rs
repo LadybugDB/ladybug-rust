@@ -66,17 +66,59 @@ fn link_libraries() {
     }
 }
 
-fn build_bundled_cmake() -> Vec<PathBuf> {
-    let lbug_root = {
-        let root = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("lbug-src");
-        if root.is_symlink() || root.is_dir() {
-            root
+fn get_lbug_root() -> PathBuf {
+    let manifest_dir = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let root = manifest_dir.join("lbug-src");
+    if root.is_symlink() || root.is_dir() {
+        return root;
+    }
+    if cfg!(windows) {
+        return manifest_dir.join("../..");
+    }
+
+    let lbug_dir = manifest_dir.join("lbug-src");
+    if !lbug_dir.exists() {
+        let version = std::env::var("LBUG_VERSION").unwrap_or_else(|| "main".to_string());
+        println!("Downloading ladybug source version {version}...");
+        let url = if version.starts_with('v') {
+            format!(
+                "https://github.com/lbugdb/lbug/archive/refs/tags/{}.tar.gz",
+                version
+            )
+        } else if version == "main" {
+            "https://github.com/lbugdb/lbug/archive/refs/heads/main.tar.gz".to_string()
         } else {
-            // If the path is not directory, this is probably an in-source build on windows where the
-            // symlink is unreadable.
-            Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..")
+            format!(
+                "https://github.com/lbugdb/lbug/archive/refs/tags/v{}.tar.gz",
+                version
+            )
+        };
+
+        let output = std::process::Command::new("curl")
+            .args(["-sL", &url])
+            .arg("-o")
+            .arg("ladybug.tar.gz")
+            .current_dir(manifest_dir)
+            .output()
+            .expect("Failed to download ladybug source");
+
+        if !output.status.success() {
+            panic!("Failed to download ladybug source from {}", url);
         }
-    };
+
+        std::process::Command::new("tar")
+            .args(["-xzf", "ladybug.tar.gz", "--strip-components=1"])
+            .current_dir(manifest_dir)
+            .expect("Failed to extract ladybug source");
+
+        std::fs::remove_file(manifest_dir.join("ladybug.tar.gz")).ok();
+    }
+
+    lbug_dir
+}
+
+fn build_bundled_cmake() -> Vec<PathBuf> {
+    let lbug_root = get_lbug_root();
 
     let mut build = cmake::Config::new(&lbug_root);
     build
