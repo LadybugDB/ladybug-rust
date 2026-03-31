@@ -119,10 +119,40 @@ pub(crate) mod ffi {
         POINTER = 25,
     }
 
+    // From statement_type.h
+    #[namespace = "lbug::common"]
+    #[repr(u8)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StatementType {
+        QUERY = 0,
+        CREATE_TABLE = 1,
+        DROP = 2,
+        ALTER = 3,
+        COPY_TO = 19,
+        COPY_FROM = 20,
+        STANDALONE_CALL = 21,
+        STANDALONE_CALL_FUNCTION = 22,
+        EXPLAIN = 23,
+        CREATE_MACRO = 24,
+        TRANSACTION = 30,
+        EXTENSION = 31,
+        EXPORT_DATABASE = 32,
+        IMPORT_DATABASE = 33,
+        ATTACH_DATABASE = 34,
+        DETACH_DATABASE = 35,
+        USE_DATABASE = 36,
+        CREATE_SEQUENCE = 37,
+        CREATE_TYPE = 39,
+        EXTENSION_CLAUSE = 40,
+        CREATE_GRAPH = 41,
+        USE_GRAPH = 42,
+    }
+
     #[namespace = "lbug::common"]
     unsafe extern "C++" {
         type LogicalTypeID;
         type PhysicalTypeID;
+        type StatementType;
     }
 
     #[namespace = "lbug::main"]
@@ -132,6 +162,9 @@ pub(crate) mod ffi {
 
         #[namespace = "lbug_rs"]
         fn prepared_statement_error_message(statement: &PreparedStatement) -> String;
+
+        #[namespace = "lbug_rs"]
+        fn prepared_statement_get_statement_type(statement: &PreparedStatement) -> StatementType;
     }
 
     #[namespace = "lbug_rs"]
