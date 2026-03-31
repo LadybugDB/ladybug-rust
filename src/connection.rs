@@ -10,7 +10,14 @@ use std::convert::TryInto;
 /// A prepared stattement is a parameterized query which can avoid planning the same query for
 /// repeated execution
 pub struct PreparedStatement {
-    statement: UniquePtr<ffi::PreparedStatement>,
+    pub(crate) statement: UniquePtr<ffi::PreparedStatement>,
+}
+
+impl PreparedStatement {
+    /// Returns the type of the prepared statement (QUERY, CREATE_TABLE, etc.).
+    pub fn get_statement_type(&self) -> ffi::StatementType {
+        ffi::prepared_statement_get_statement_type(&self.statement)
+    }
 }
 
 /// Connections are used to interact with a Database instance.

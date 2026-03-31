@@ -64,6 +64,7 @@
 
 pub use connection::{Connection, PreparedStatement};
 pub use database::{Database, SystemConfig};
+pub use ffi::ffi::StatementType;
 pub use error::Error;
 pub use logical_type::LogicalType;
 #[cfg(feature = "arrow")]

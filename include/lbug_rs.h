@@ -5,6 +5,7 @@
 
 #include "rust/cxx.h"
 #ifdef LBUG_BUNDLED
+#include "common/enums/statement_type.h"
 #include "common/type_utils.h"
 #include "common/types/int128_t.h"
 #include "common/types/types.h"
@@ -111,6 +112,10 @@ inline std::unique_ptr<lbug::main::QueryResult> connection_query(lbug::main::Con
 
 /* PreparedStatement */
 rust::String prepared_statement_error_message(const lbug::main::PreparedStatement& statement);
+inline lbug::common::StatementType prepared_statement_get_statement_type(
+    const lbug::main::PreparedStatement& statement) {
+    return statement.getStatementType();
+}
 
 /* QueryResult */
 rust::String query_result_to_string(const lbug::main::QueryResult& result);
