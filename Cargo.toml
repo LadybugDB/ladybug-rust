@@ -5,7 +5,7 @@ description = "An in-process property graph database management system built for
 keywords = ["database", "graph", "ffi"]
 readme = "lbug-src/README.md"
 homepage = "https://ladybugdb.com/"
-repository = "https://github.com/lbugdb/lbug"
+repository = "https://github.com/LadybugDB/ladybug-rust"
 license = "MIT"
 categories = ["database"]
 
