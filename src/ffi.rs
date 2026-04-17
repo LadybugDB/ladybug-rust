@@ -196,6 +196,7 @@ pub(crate) mod ffi {
             checkpoint_threshold: i64,
             throw_on_wal_replay_failure: bool,
             enable_checksums: bool,
+            enableMultiWrites: bool,
         ) -> Result<UniquePtr<Database>>;
 
     }

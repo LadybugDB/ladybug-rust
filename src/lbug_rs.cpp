@@ -68,7 +68,7 @@ std::unique_ptr<std::vector<lbug::common::LogicalType>> logical_type_get_struct_
 std::unique_ptr<Database> new_database(std::string_view databasePath, uint64_t bufferPoolSize,
     uint64_t maxNumThreads, bool enableCompression, bool readOnly, uint64_t maxDBSize,
     bool autoCheckpoint, int64_t checkpointThreshold, bool throwOnWalReplayFailure,
-    bool enableChecksums) {
+    bool enableChecksums, bool enableMultiWrites) {
     auto systemConfig = SystemConfig();
     if (bufferPoolSize > 0) {
         systemConfig.bufferPoolSize = bufferPoolSize;
@@ -87,6 +87,7 @@ std::unique_ptr<Database> new_database(std::string_view databasePath, uint64_t b
     }
     systemConfig.throwOnWalReplayFailure = throwOnWalReplayFailure;
     systemConfig.enableChecksums = enableChecksums;
+    systemConfig.enableMultiWrites = enableMultiWrites;
     return std::make_unique<Database>(databasePath, systemConfig);
 }
 

@@ -43,6 +43,9 @@ pub struct SystemConfig {
     throw_on_wal_replay_failure: bool,
     /// If true, the database will use checksums to detect corruption in the WAL file.
     enable_checksums: bool,
+    /// If true, multiple concurrent write transactions are allowed.
+    /// Defaults to false
+    enable_multi_writes: bool,
 }
 
 #[cfg(test)]
@@ -58,6 +61,7 @@ pub(crate) const SYSTEM_CONFIG_FOR_TESTS: SystemConfig = SystemConfig {
     checkpoint_threshold: -1_i64,
     throw_on_wal_replay_failure: true,
     enable_checksums: true,
+    enable_multi_writes: false,
 };
 
 impl Default for SystemConfig {
@@ -73,6 +77,7 @@ impl Default for SystemConfig {
             checkpoint_threshold: -1_i64,
             throw_on_wal_replay_failure: true,
             enable_checksums: true,
+            enable_multi_writes: false,
         }
     }
 }
@@ -114,6 +119,10 @@ impl SystemConfig {
         self.enable_checksums = enable_checksums;
         self
     }
+    pub fn enable_multi_writes(mut self, enable_multi_writes: bool) -> Self {
+        self.enable_multi_writes = enable_multi_writes;
+        self
+    }
 }
 
 pub(crate) const IN_MEMORY_DB_NAME: &str = ":memory:";
@@ -138,6 +147,7 @@ impl Database {
                 config.checkpoint_threshold,
                 config.throw_on_wal_replay_failure,
                 config.enable_checksums,
+                config.enable_multi_writes,
             )?),
         })
     }
@@ -341,6 +351,21 @@ mod tests {
             })
             .collect();
         assert!(results == HashSet::from(["Alice".to_string(), "Bob".to_string()]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_database_enable_multi_writes() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(
+            temp_dir.path().join("test"),
+            SYSTEM_CONFIG_FOR_TESTS.enable_multi_writes(true),
+        )?;
+        let conn1 = Connection::new(&db)?;
+        conn1.query("BEGIN TRANSACTION;")?;
+        conn1.query("CREATE NODE TABLE t(a INT, b INT, PRIMARY KEY(a));")?;
+        let conn2 = Connection::new(&db)?;
+        conn2.query("BEGIN TRANSACTION;")?;
         Ok(())
     }
 }

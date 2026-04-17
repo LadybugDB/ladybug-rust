@@ -97,7 +97,7 @@ inline uint32_t logical_type_get_decimal_scale(const lbug::common::LogicalType& 
 std::unique_ptr<lbug::main::Database> new_database(std::string_view databasePath,
     uint64_t bufferPoolSize, uint64_t maxNumThreads, bool enableCompression, bool readOnly,
     uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
-    bool throwOnWalReplayFailure, bool enableChecksums);
+    bool throwOnWalReplayFailure, bool enableChecksums, bool enableMultiWrites);
 
 void database_set_logging_level(lbug::main::Database& database, const std::string& level);
 
