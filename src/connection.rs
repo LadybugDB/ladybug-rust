@@ -14,9 +14,9 @@ pub struct PreparedStatement {
 }
 
 impl PreparedStatement {
-    /// Returns the type of the prepared statement (QUERY, CREATE_TABLE, etc.).
-    pub fn get_statement_type(&self) -> ffi::StatementType {
-        ffi::prepared_statement_get_statement_type(&self.statement)
+    /// Returns true if the prepared statement only performs read operations.
+    pub fn is_read_only(&self) -> bool {
+        ffi::prepared_statement_is_read_only(&self.statement)
     }
 }
 
@@ -298,6 +298,23 @@ Invalid input <MATCH (a:Person RETURN>: expected rule oC_SingleQuery (line: 1, o
             assert_eq!(result.len(), 1);
             assert_eq!(result[0], Value::String("Alice".to_string()));
         }
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_prepared_statement_is_read_only() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("test"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+
+        let read_statement = conn.prepare("RETURN 1")?;
+        assert!(read_statement.is_read_only());
+
+        let write_statement =
+            conn.prepare("CREATE NODE TABLE Person(name STRING, PRIMARY KEY(name));")?;
+        assert!(!write_statement.is_read_only());
+
         temp_dir.close()?;
         Ok(())
     }

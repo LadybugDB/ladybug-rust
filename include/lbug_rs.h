@@ -1,24 +1,20 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <memory>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
 
 #include "rust/cxx.h"
 #ifdef LBUG_BUNDLED
-#include "common/enums/statement_type.h"
-#include "common/type_utils.h"
-#include "common/types/int128_t.h"
-#include "common/types/types.h"
-#include "common/types/value/nested.h"
-#include "common/types/value/node.h"
-#include "common/types/value/recursive_rel.h"
-#include "common/types/value/rel.h"
-#include "common/types/value/value.h"
+#include "c_api/lbug.h"
 #include "main/lbug.h"
-#include "storage/storage_version_info.h"
 #else
 #include <lbug.hpp>
-#include "common/enums/statement_type.h"
+#include <lbug.h>
 #endif
 
 namespace lbug_rs {
@@ -141,9 +137,10 @@ inline void connection_set_query_timeout(lbug::main::Connection& connection, uin
 
 /* PreparedStatement */
 rust::String prepared_statement_error_message(const lbug::main::PreparedStatement& statement);
-inline lbug::common::StatementType prepared_statement_get_statement_type(
-    const lbug::main::PreparedStatement& statement) {
-    return statement.getStatementType();
+inline bool prepared_statement_is_read_only(const lbug::main::PreparedStatement& statement) {
+    lbug_prepared_statement c_statement{
+        const_cast<lbug::main::PreparedStatement*>(&statement), nullptr};
+    return lbug_prepared_statement_is_read_only(&c_statement);
 }
 inline bool prepared_statement_is_success(const lbug::main::PreparedStatement& statement) {
     return statement.isSuccess();
