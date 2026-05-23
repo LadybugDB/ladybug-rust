@@ -138,9 +138,7 @@ inline void connection_set_query_timeout(lbug::main::Connection& connection, uin
 /* PreparedStatement */
 rust::String prepared_statement_error_message(const lbug::main::PreparedStatement& statement);
 inline bool prepared_statement_is_read_only(const lbug::main::PreparedStatement& statement) {
-    lbug_prepared_statement c_statement{
-        const_cast<lbug::main::PreparedStatement*>(&statement), nullptr};
-    return lbug_prepared_statement_is_read_only(&c_statement);
+    return statement.isReadOnly();
 }
 inline bool prepared_statement_is_success(const lbug::main::PreparedStatement& statement) {
     return statement.isSuccess();
