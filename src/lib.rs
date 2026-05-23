@@ -91,7 +91,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// This is `external` when `LBUG_LIBRARY_DIR`/`LBUG_INCLUDE_DIR` were supplied, `source` when the
 /// bundled C++ source was built, or a value such as `run:LadybugDB/ladybug/25646256977` or
-/// `release:LadybugDB/ladybug/v0.16.0` when a precompiled archive was downloaded.
+/// `release:LadybugDB/ladybug/v0.17.0` when a precompiled archive was downloaded.
 pub const LBUG_LIBRARY_SOURCE: &str = env!("LBUG_PRECOMPILED_SOURCE");
 /// The directory containing the linked precompiled Lbug library, if one was used.
 pub const LBUG_LIBRARY_DIR: &str = env!("LBUG_PRECOMPILED_LIBRARY_DIR");

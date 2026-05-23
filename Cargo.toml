@@ -1,6 +1,6 @@
 [package]
 name = "lbug"
-version = "0.16.0"
+version = "0.17.0"
 description = "An in-process property graph database management system built for query speed and scalability"
 keywords = ["database", "graph", "ffi"]
 readme = "lbug-src/README.md"
