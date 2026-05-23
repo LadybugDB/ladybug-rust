@@ -10,6 +10,8 @@ pub enum Error {
     FailedPreparedStatement(String),
     /// Message produced when you attempt to pass read-only types over the FFI boundary
     ReadOnlyType(LogicalType),
+    /// Message produced when JSON serialization fails
+    JsonError(serde_json::Error),
     #[cfg(feature = "arrow")]
     ArrowError(arrow::error::ArrowError),
 }
@@ -25,6 +27,7 @@ impl std::fmt::Display for Error {
             Error::ReadOnlyType(typ) => {
                 write!(f, "Attempted to pass read only type {typ:?} over ffi!")
             }
+            Error::JsonError(err) => write!(f, "{err}"),
             #[cfg(feature = "arrow")]
             Error::ArrowError(err) => write!(f, "{err}"),
         }
@@ -41,6 +44,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::CxxException(cxx) => Some(cxx),
+            Error::JsonError(err) => Some(err),
             _ => None,
         }
     }
@@ -49,6 +53,12 @@ impl std::error::Error for Error {
 impl From<cxx::Exception> for Error {
     fn from(item: cxx::Exception) -> Self {
         Error::CxxException(item)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(item: serde_json::Error) -> Self {
+        Error::JsonError(item)
     }
 }
 

@@ -86,6 +86,7 @@ pub(crate) mod ffi {
         UNION = 56,
 
         UUID = 59,
+        JSON = 60,
     }
 
     // From types.h
@@ -113,6 +114,7 @@ pub(crate) mod ffi {
 
         // Variable size types.
         STRING = 20,
+        JSON = 21,
         LIST = 22,
         ARRAY = 23,
         STRUCT = 24,

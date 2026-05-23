@@ -83,6 +83,8 @@ pub enum LogicalType {
     },
     /// Correponds to [`Value::UUID`](crate::value::Value::UUID)
     UUID,
+    /// Corresponds to [`Value::Json`](crate::value::Value::Json)
+    Json,
     /// Correponds to [`Value::Decimal`](crate::value::Value::Decimal)
     Decimal {
         precision: u32,
@@ -188,6 +190,7 @@ impl From<&ffi::LogicalType> for LogicalType {
                 }
             }
             LogicalTypeID::UUID => LogicalType::UUID,
+            LogicalTypeID::JSON => LogicalType::Json,
             LogicalTypeID::DECIMAL => {
                 let precision = ffi::logical_type_get_decimal_precision(logical_type);
                 let scale = ffi::logical_type_get_decimal_scale(logical_type);
@@ -230,7 +233,8 @@ impl From<&LogicalType> for cxx::UniquePtr<ffi::LogicalType> {
             | LogicalType::Node
             | LogicalType::Rel
             | LogicalType::RecursiveRel
-            | LogicalType::UUID => ffi::create_logical_type(typ.id()),
+            | LogicalType::UUID
+            | LogicalType::Json => ffi::create_logical_type(typ.id()),
             LogicalType::List { child_type } => {
                 ffi::create_logical_type_list(child_type.as_ref().into())
             }
@@ -304,6 +308,7 @@ impl LogicalType {
             LogicalType::Map { .. } => LogicalTypeID::MAP,
             LogicalType::Union { .. } => LogicalTypeID::UNION,
             LogicalType::UUID => LogicalTypeID::UUID,
+            LogicalType::Json => LogicalTypeID::JSON,
             LogicalType::Decimal { .. } => LogicalTypeID::DECIMAL,
         }
     }

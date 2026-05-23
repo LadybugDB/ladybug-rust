@@ -15,6 +15,7 @@ pub enum ConversionError {
     TimestampNs(i64),
     TimestampMs(i64),
     TimestampSec(i64),
+    Json(String, serde_json::Error),
 }
 
 impl std::fmt::Display for ConversionError {
@@ -26,7 +27,7 @@ impl std::fmt::Display for ConversionError {
 impl std::fmt::Debug for ConversionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use ConversionError::{
-            Date, Timestamp, TimestampMs, TimestampNs, TimestampSec, TimestampTz,
+            Date, Json, Timestamp, TimestampMs, TimestampNs, TimestampSec, TimestampTz,
         };
         match self {
             Date(days) => write!(f, "Could not convert Lbug date offset of UNIX_EPOCH + {days} days to time::Date"),
@@ -35,6 +36,7 @@ impl std::fmt::Debug for ConversionError {
             TimestampNs(ns) => write!(f, "Could not convert Lbug timestamp_ns offset of UNIX_EPOCH + {ns} nanoseconds to time::OffsetDateTime"),
             TimestampMs(ms) => write!(f, "Could not convert Lbug timestamp_ms offset of UNIX_EPOCH + {ms} milliseconds to time::OffsetDateTime"),
             TimestampSec(sec) => write!(f, "Could not convert Lbug timestamp_sec offset of UNIX_EPOCH + {sec} seconds to time::OffsetDateTime"),
+            Json(value, err) => write!(f, "Could not convert Lbug JSON value {value:?}: {err}"),
         }
     }
 }
@@ -237,6 +239,7 @@ pub enum Value {
     InternalID(InternalID),
     /// <https://ladybugdb.com/docusaurus/cypher/data-types/string.html>
     String(String),
+    Json(serde_json::Value),
     Blob(Vec<u8>),
     // TODO: Enforce type of contents
     // LogicalType is necessary so that we can pass the correct type to the C++ API if the list is empty.
@@ -296,6 +299,7 @@ impl std::fmt::Display for Value {
             Value::Int128(x) => write!(f, "{x}"),
             Value::Date(x) => write!(f, "{x}"),
             Value::String(x) => write!(f, "{x}"),
+            Value::Json(x) => write!(f, "{x}"),
             Value::Blob(x) => write!(f, "{x:x?}"),
             Value::Null(_) => write!(f, ""),
             Value::List(_, x) | Value::Array(_, x) => display_list(f, x),
@@ -369,6 +373,7 @@ impl From<&Value> for LogicalType {
             Value::TimestampMs(_) => LogicalType::TimestampMs,
             Value::TimestampSec(_) => LogicalType::TimestampSec,
             Value::String(_) => LogicalType::String,
+            Value::Json(_) => LogicalType::Json,
             Value::Blob(_) => LogicalType::Blob,
             Value::Null(x) => x.clone(),
             Value::List(x, _) => LogicalType::List {
@@ -458,6 +463,12 @@ impl TryFrom<&ffi::Value> for Value {
             LogicalTypeID::FLOAT => Ok(Value::Float(ffi::value_get_float(value))),
             LogicalTypeID::DOUBLE => Ok(Value::Double(ffi::value_get_double(value))),
             LogicalTypeID::STRING => Ok(Value::String(ffi::value_get_string(value).to_string())),
+            LogicalTypeID::JSON => {
+                let json = ffi::value_get_string(value).to_string();
+                serde_json::from_str(&json)
+                    .map(Value::Json)
+                    .map_err(|err| ConversionError::Json(json, err))
+            }
             LogicalTypeID::BLOB => Ok(Value::Blob(
                 ffi::value_get_string(value).as_bytes().to_vec(),
             )),
@@ -754,6 +765,10 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 ffi::LogicalTypeID::STRING,
                 value.as_bytes(),
             )),
+            Value::Json(value) => Ok(ffi::create_value_string(
+                ffi::LogicalTypeID::JSON,
+                &serde_json::to_vec(&value)?,
+            )),
             Value::Blob(value) => Ok(ffi::create_value_string(ffi::LogicalTypeID::BLOB, &value)),
             Value::Timestamp(value) => {
                 Ok(ffi::create_value_timestamp(datetime_to_timestamp_t(value)))
@@ -950,6 +965,12 @@ impl From<f64> for Value {
 impl From<String> for Value {
     fn from(item: String) -> Self {
         Value::String(item)
+    }
+}
+
+impl From<serde_json::Value> for Value {
+    fn from(item: serde_json::Value) -> Self {
+        Value::Json(item)
     }
 }
 
