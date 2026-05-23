@@ -72,6 +72,43 @@ fn link_libraries(link_bundled_deps: bool) {
     }
 }
 
+/// Emit `cargo:rustc-link-lib` directives for every bundled-dep static archive
+/// that was shipped alongside the prebuilt `liblbug.a`.  The prebuilt archive
+/// contains object files that reference symbols from these libraries (yyjson,
+/// simsimd, etc.) but does not fold them in, so the linker must be told to
+/// pull them in explicitly.  The directives are only emitted for files that
+/// actually exist so this is a no-op when the prebuilt ships a fused archive.
+fn link_prebuilt_bundled_deps(lib_dir: &Path) {
+    for lib in [
+        "utf8proc",
+        "antlr4_cypher",
+        "antlr4_runtime",
+        "re2",
+        "fastpfor",
+        "parquet",
+        "thrift",
+        "snappy",
+        "zstd",
+        "miniz",
+        "mbedtls",
+        "brotlidec",
+        "brotlicommon",
+        "lz4",
+        "roaring_bitmap",
+        "simsimd",
+        "yyjson",
+    ] {
+        let lib_path = lib_dir.join(format!("lib{lib}.a"));
+        if lib_path.exists() {
+            if rustversion::cfg!(since(1.82)) {
+                println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
+            } else {
+                println!("cargo:rustc-link-lib=static={lib}");
+            }
+        }
+    }
+}
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
 }
@@ -198,6 +235,11 @@ fn use_prebuilt_lbug(manifest_dir: &Path) -> Option<Vec<PathBuf>> {
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rerun-if-changed={}", lib_dir.display());
     emit_lbug_metadata(&prebuilt_source_desc(), &lib_dir);
+    // Link any bundled-dep archives that were shipped alongside liblbug.a.
+    // The prebuilt archive has unresolved references to yyjson, simsimd, etc.;
+    // without these directives the final link step fails with
+    // "Undefined symbols: _yyjson_val_mut_copy, ..." on macOS/Linux.
+    link_prebuilt_bundled_deps(&lib_dir);
     Some(vec![lib_dir])
 }
 
