@@ -19,6 +19,18 @@
 
 namespace lbug_rs {
 
+using ArrowArray = ::ArrowArray;
+using ArrowSchema = ::ArrowSchema;
+
+struct ArrowArrayList {
+    std::vector<ArrowArray> arrays;
+};
+
+std::unique_ptr<ArrowArrayList> new_arrow_array_list();
+inline void arrow_array_list_push(ArrowArrayList& list, ArrowArray array) {
+    list.arrays.push_back(array);
+}
+
 struct TypeListBuilder {
     std::vector<lbug::common::LogicalType> types;
 
@@ -117,6 +129,23 @@ inline std::unique_ptr<lbug::main::QueryResult> connection_query(lbug::main::Con
     std::string_view query) {
     return connection.query(query);
 }
+inline std::unique_ptr<lbug::main::QueryResult> connection_query_as_arrow(
+    lbug::main::Connection& connection, std::string_view query, int64_t chunkSize) {
+    return connection.queryAsArrow(query, chunkSize);
+}
+std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_table(
+    lbug::main::Connection& connection, std::string_view tableName, ArrowSchema schema,
+    std::unique_ptr<ArrowArrayList> arrays);
+std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_rel_table(
+    lbug::main::Connection& connection, std::string_view tableName, std::string_view srcTableName,
+    std::string_view dstTableName, ArrowSchema schema, std::unique_ptr<ArrowArrayList> arrays);
+std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_rel_table_csr(
+    lbug::main::Connection& connection, std::string_view tableName, std::string_view srcTableName,
+    std::string_view dstTableName, ArrowSchema indicesSchema,
+    std::unique_ptr<ArrowArrayList> indicesArrays, ArrowSchema indptrSchema,
+    std::unique_ptr<ArrowArrayList> indptrArrays);
+std::unique_ptr<lbug::main::QueryResult> connection_drop_arrow_table(
+    lbug::main::Connection& connection, std::string_view tableName);
 inline std::unique_ptr<lbug::main::PreparedStatement> connection_prepare(
     lbug::main::Connection& connection, std::string_view query) {
     return connection.prepare(query);

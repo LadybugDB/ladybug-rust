@@ -1,5 +1,7 @@
 #include "lbug_rs.h"
 
+#include <stdexcept>
+
 using lbug::common::ArrayTypeInfo;
 using lbug::common::Interval;
 using lbug::common::ListTypeInfo;
@@ -17,6 +19,10 @@ namespace lbug_rs {
 
 std::unique_ptr<QueryParams> new_params() {
     return std::make_unique<QueryParams>();
+}
+
+std::unique_ptr<ArrowArrayList> new_arrow_array_list() {
+    return std::make_unique<ArrowArrayList>();
 }
 
 std::unique_ptr<LogicalType> create_logical_type(lbug::common::LogicalTypeID id) {
@@ -98,6 +104,93 @@ std::unique_ptr<lbug::main::Connection> database_connect(lbug::main::Database& d
 std::unique_ptr<lbug::main::QueryResult> connection_execute(lbug::main::Connection& connection,
     lbug::main::PreparedStatement& query, std::unique_ptr<QueryParams> params) {
     return connection.executeWithParams(&query, std::move(params->inputParams));
+}
+
+std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_table(
+    lbug::main::Connection& connection, std::string_view tableName, ArrowSchema schema,
+    std::unique_ptr<ArrowArrayList> arrays) {
+    lbug_connection capiConnection{&connection};
+    lbug_query_result capiResult{};
+    (void)lbug_connection_create_arrow_table(&capiConnection, std::string(tableName).c_str(),
+        &schema, arrays->arrays.data(), arrays->arrays.size(), &capiResult);
+    if (capiResult._query_result == nullptr) {
+        auto error = lbug_get_last_error();
+        std::string message = error == nullptr ? "Failed to create Arrow table" : error;
+        if (error != nullptr) {
+            lbug_destroy_string(error);
+        }
+        throw std::runtime_error(message);
+    }
+    return std::unique_ptr<lbug::main::QueryResult>(
+        static_cast<lbug::main::QueryResult*>(capiResult._query_result));
+}
+
+std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_rel_table(
+    lbug::main::Connection& connection, std::string_view tableName, std::string_view srcTableName,
+    std::string_view dstTableName, ArrowSchema schema, std::unique_ptr<ArrowArrayList> arrays) {
+    lbug_connection capiConnection{&connection};
+    lbug_query_result capiResult{};
+    auto tableNameString = std::string(tableName);
+    auto srcTableNameString = std::string(srcTableName);
+    auto dstTableNameString = std::string(dstTableName);
+    (void)lbug_connection_create_arrow_rel_table(&capiConnection, tableNameString.c_str(),
+        srcTableNameString.c_str(), dstTableNameString.c_str(), &schema, arrays->arrays.data(),
+        arrays->arrays.size(), &capiResult);
+    if (capiResult._query_result == nullptr) {
+        auto error = lbug_get_last_error();
+        std::string message = error == nullptr ? "Failed to create Arrow relationship table" : error;
+        if (error != nullptr) {
+            lbug_destroy_string(error);
+        }
+        throw std::runtime_error(message);
+    }
+    return std::unique_ptr<lbug::main::QueryResult>(
+        static_cast<lbug::main::QueryResult*>(capiResult._query_result));
+}
+
+std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_rel_table_csr(
+    lbug::main::Connection& connection, std::string_view tableName, std::string_view srcTableName,
+    std::string_view dstTableName, ArrowSchema indicesSchema,
+    std::unique_ptr<ArrowArrayList> indicesArrays, ArrowSchema indptrSchema,
+    std::unique_ptr<ArrowArrayList> indptrArrays) {
+    lbug_connection capiConnection{&connection};
+    lbug_query_result capiResult{};
+    auto tableNameString = std::string(tableName);
+    auto srcTableNameString = std::string(srcTableName);
+    auto dstTableNameString = std::string(dstTableName);
+    (void)lbug_connection_create_arrow_rel_table_csr(&capiConnection,
+        tableNameString.c_str(), srcTableNameString.c_str(), dstTableNameString.c_str(),
+        &indicesSchema, indicesArrays->arrays.data(), indicesArrays->arrays.size(), &indptrSchema,
+        indptrArrays->arrays.data(), indptrArrays->arrays.size(), &capiResult);
+    if (capiResult._query_result == nullptr) {
+        auto error = lbug_get_last_error();
+        std::string message =
+            error == nullptr ? "Failed to create Arrow CSR relationship table" : error;
+        if (error != nullptr) {
+            lbug_destroy_string(error);
+        }
+        throw std::runtime_error(message);
+    }
+    return std::unique_ptr<lbug::main::QueryResult>(
+        static_cast<lbug::main::QueryResult*>(capiResult._query_result));
+}
+
+std::unique_ptr<lbug::main::QueryResult> connection_drop_arrow_table(
+    lbug::main::Connection& connection, std::string_view tableName) {
+    lbug_connection capiConnection{&connection};
+    lbug_query_result capiResult{};
+    (void)lbug_connection_drop_arrow_table(
+        &capiConnection, std::string(tableName).c_str(), &capiResult);
+    if (capiResult._query_result == nullptr) {
+        auto error = lbug_get_last_error();
+        std::string message = error == nullptr ? "Failed to drop Arrow table" : error;
+        if (error != nullptr) {
+            lbug_destroy_string(error);
+        }
+        throw std::runtime_error(message);
+    }
+    return std::unique_ptr<lbug::main::QueryResult>(
+        static_cast<lbug::main::QueryResult*>(capiResult._query_result));
 }
 
 rust::String prepared_statement_error_message(const lbug::main::PreparedStatement& statement) {

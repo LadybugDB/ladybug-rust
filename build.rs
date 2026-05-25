@@ -364,6 +364,11 @@ fn build_ffi(
 
     println!("cargo:rerun-if-changed=include/lbug_rs.h");
     println!("cargo:rerun-if-changed=src/lbug_rs.cpp");
+    println!("cargo:rerun-if-changed={bridge_file}");
+    println!("cargo:rerun-if-changed={source_file}");
+    if cfg!(feature = "arrow") {
+        println!("cargo:rerun-if-changed=include/lbug_arrow.h");
+    }
     if bundled {
         // Note that this should match the lbug-src/* entries in the package.include list in Cargo.toml
         // Unfortunately they appear to need to be specified individually since the symlink is

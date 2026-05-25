@@ -73,7 +73,7 @@ pub use database::{Database, SystemConfig};
 pub use error::Error;
 pub use logical_type::LogicalType;
 #[cfg(feature = "arrow")]
-pub use query_result::ArrowIterator;
+pub use query_result::{ArrowIterator, CsrResult};
 pub use query_result::{CSVOptions, QueryResult};
 pub use value::{InternalID, NodeVal, RelVal, Value};
 
