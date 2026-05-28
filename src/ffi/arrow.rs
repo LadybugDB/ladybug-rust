@@ -93,7 +93,7 @@ pub(crate) mod ffi_arrow {
             arrays: UniquePtr<ArrowArrayList>,
         ) -> Result<UniquePtr<QueryResult<'db>>>;
 
-        fn connection_create_arrow_rel_table_csr<'a, 'b, 'c, 'db>(
+        fn connection_create_arrow_rel_table_csr<'a, 'b, 'c, 'd, 'db>(
             connection: Pin<&mut Connection<'db>>,
             table_name: StringView<'a>,
             src_table_name: StringView<'b>,
@@ -102,6 +102,7 @@ pub(crate) mod ffi_arrow {
             indices_arrays: UniquePtr<ArrowArrayList>,
             indptr_schema: ArrowSchema,
             indptr_arrays: UniquePtr<ArrowArrayList>,
+            dst_col_name: StringView<'d>,
         ) -> Result<UniquePtr<QueryResult<'db>>>;
 
         fn connection_drop_arrow_table<'a, 'db>(

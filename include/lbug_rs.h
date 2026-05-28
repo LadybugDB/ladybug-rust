@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -13,8 +13,8 @@
 #include "c_api/lbug.h"
 #include "main/lbug.h"
 #else
-#include <lbug.hpp>
 #include <lbug.h>
+#include <lbug.hpp>
 #endif
 
 namespace lbug_rs {
@@ -40,7 +40,8 @@ struct TypeListBuilder {
 };
 
 std::unique_ptr<TypeListBuilder> create_type_list();
-inline void type_list_insert(TypeListBuilder& list, std::unique_ptr<lbug::common::LogicalType> type) {
+inline void type_list_insert(TypeListBuilder& list,
+    std::unique_ptr<lbug::common::LogicalType> type) {
     list.insert(std::move(type));
 }
 
@@ -143,7 +144,7 @@ std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_rel_table_csr(
     lbug::main::Connection& connection, std::string_view tableName, std::string_view srcTableName,
     std::string_view dstTableName, ArrowSchema indicesSchema,
     std::unique_ptr<ArrowArrayList> indicesArrays, ArrowSchema indptrSchema,
-    std::unique_ptr<ArrowArrayList> indptrArrays);
+    std::unique_ptr<ArrowArrayList> indptrArrays, std::string_view dstColName = "to");
 std::unique_ptr<lbug::main::QueryResult> connection_drop_arrow_table(
     lbug::main::Connection& connection, std::string_view tableName);
 inline std::unique_ptr<lbug::main::PreparedStatement> connection_prepare(

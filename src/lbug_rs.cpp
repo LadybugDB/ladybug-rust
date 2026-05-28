@@ -138,7 +138,8 @@ std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_rel_table(
         arrays->arrays.size(), &capiResult);
     if (capiResult._query_result == nullptr) {
         auto error = lbug_get_last_error();
-        std::string message = error == nullptr ? "Failed to create Arrow relationship table" : error;
+        std::string message =
+            error == nullptr ? "Failed to create Arrow relationship table" : error;
         if (error != nullptr) {
             lbug_destroy_string(error);
         }
@@ -152,16 +153,18 @@ std::unique_ptr<lbug::main::QueryResult> connection_create_arrow_rel_table_csr(
     lbug::main::Connection& connection, std::string_view tableName, std::string_view srcTableName,
     std::string_view dstTableName, ArrowSchema indicesSchema,
     std::unique_ptr<ArrowArrayList> indicesArrays, ArrowSchema indptrSchema,
-    std::unique_ptr<ArrowArrayList> indptrArrays) {
+    std::unique_ptr<ArrowArrayList> indptrArrays, std::string_view dstColName) {
     lbug_connection capiConnection{&connection};
     lbug_query_result capiResult{};
     auto tableNameString = std::string(tableName);
     auto srcTableNameString = std::string(srcTableName);
     auto dstTableNameString = std::string(dstTableName);
-    (void)lbug_connection_create_arrow_rel_table_csr(&capiConnection,
-        tableNameString.c_str(), srcTableNameString.c_str(), dstTableNameString.c_str(),
-        &indicesSchema, indicesArrays->arrays.data(), indicesArrays->arrays.size(), &indptrSchema,
-        indptrArrays->arrays.data(), indptrArrays->arrays.size(), &capiResult);
+    auto dstColNameString = std::string(dstColName);
+    (void)lbug_connection_create_arrow_rel_table_csr(&capiConnection, tableNameString.c_str(),
+        srcTableNameString.c_str(), dstTableNameString.c_str(), &indicesSchema,
+        indicesArrays->arrays.data(), indicesArrays->arrays.size(), &indptrSchema,
+        indptrArrays->arrays.data(), indptrArrays->arrays.size(), dstColNameString.c_str(),
+        &capiResult);
     if (capiResult._query_result == nullptr) {
         auto error = lbug_get_last_error();
         std::string message =
@@ -179,8 +182,8 @@ std::unique_ptr<lbug::main::QueryResult> connection_drop_arrow_table(
     lbug::main::Connection& connection, std::string_view tableName) {
     lbug_connection capiConnection{&connection};
     lbug_query_result capiResult{};
-    (void)lbug_connection_drop_arrow_table(
-        &capiConnection, std::string(tableName).c_str(), &capiResult);
+    (void)lbug_connection_drop_arrow_table(&capiConnection, std::string(tableName).c_str(),
+        &capiResult);
     if (capiResult._query_result == nullptr) {
         auto error = lbug_get_last_error();
         std::string message = error == nullptr ? "Failed to drop Arrow table" : error;

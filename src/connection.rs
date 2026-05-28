@@ -263,8 +263,8 @@ impl<'a> Connection<'a> {
     #[cfg(feature = "arrow")]
     /// Registers Arrow memory in CSR form as a relationship table.
     ///
-    /// The `indices_batches` schema must include a destination column named `to`. The
-    /// `indptr_batches` schema must contain at least one offset column.
+    /// The `indices_batches` schema must include a destination column named by `dst_col_name`
+    /// (defaults to `"to"`). The `indptr_batches` schema must contain at least one offset column.
     ///
     /// *Requires the `arrow` feature*
     pub fn create_arrow_rel_table_csr(
@@ -274,6 +274,7 @@ impl<'a> Connection<'a> {
         indptr_batches: &[arrow::record_batch::RecordBatch],
         src_table_name: &str,
         dst_table_name: &str,
+        dst_col_name: &str,
     ) -> Result<QueryResult<'a>, Error> {
         let (indices_schema, indices_arrays) = export_arrow_batches(indices_batches)?;
         let (indptr_schema, indptr_arrays) = export_arrow_batches(indptr_batches)?;
@@ -287,6 +288,7 @@ impl<'a> Connection<'a> {
             indices_arrays,
             indptr_schema,
             indptr_arrays,
+            ffi::StringView::new(dst_col_name),
         )?;
         Self::query_result_from_ffi(result)
     }
@@ -606,7 +608,61 @@ Invalid input <MATCH (a:Person RETURN>: expected rule oC_SingleQuery (line: 1, o
             indptr_schema,
             vec![Arc::new(UInt64Array::from(vec![0, 1, 2]))],
         )?;
-        conn.create_arrow_rel_table_csr("Knows", &[indices], &[indptr], "Person", "Person")?;
+        conn.create_arrow_rel_table_csr("Knows", &[indices], &[indptr], "Person", "Person", "to")?;
+
+        let result = conn.query(
+            "MATCH (a:Person)-[r:Knows]->(b:Person) \
+             RETURN a.id, r.weight, b.id ORDER BY a.id, b.id;",
+        )?;
+        assert_eq!(result.to_string(), "a.id|r.weight|b.id\n0|7|1\n1|9|0\n");
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "arrow")]
+    fn test_create_arrow_rel_table_csr_custom_dst_col() -> Result<()> {
+        use arrow::array::{Int64Array, UInt64Array};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("test"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        let node_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let nodes =
+            RecordBatch::try_new(node_schema, vec![Arc::new(Int64Array::from(vec![0, 1]))])?;
+        conn.create_arrow_table("Person", &[nodes])?;
+
+        let indices_schema = Arc::new(Schema::new(vec![
+            Field::new("dest", DataType::UInt64, false),
+            Field::new("weight", DataType::Int64, false),
+        ]));
+        let indices = RecordBatch::try_new(
+            indices_schema,
+            vec![
+                Arc::new(UInt64Array::from(vec![1, 0])),
+                Arc::new(Int64Array::from(vec![7, 9])),
+            ],
+        )?;
+        let indptr_schema = Arc::new(Schema::new(vec![Field::new(
+            "indptr",
+            DataType::UInt64,
+            false,
+        )]));
+        let indptr = RecordBatch::try_new(
+            indptr_schema,
+            vec![Arc::new(UInt64Array::from(vec![0, 1, 2]))],
+        )?;
+        conn.create_arrow_rel_table_csr(
+            "Knows",
+            &[indices],
+            &[indptr],
+            "Person",
+            "Person",
+            "dest",
+        )?;
 
         let result = conn.query(
             "MATCH (a:Person)-[r:Knows]->(b:Person) \
