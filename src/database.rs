@@ -33,7 +33,7 @@ pub struct SystemConfig {
     /// Whether or not the database can be written to from this instance
     /// Defaults to not read-only
     read_only: bool,
-    /// The maximum size of the database. Defaults to 8TB
+    /// The maximum size of the database in bytes. Note that this is introduced temporarily for now to get around with the default 8TB mmap address space limit some
     max_db_size: u64,
     /// If true, the database will automatically checkpoint when the size of the WAL file exceeds the checkpoint threshold.
     auto_checkpoint: bool,
