@@ -295,40 +295,6 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
     let lbug_lib_path = build_dir.join("build").join("src");
     println!("cargo:rustc-link-search=native={}", lbug_lib_path.display());
 
-    for dir in [
-        "utf8proc",
-        "antlr4_cypher",
-        "antlr4_runtime",
-        "re2",
-        "brotli",
-        "alp",
-        "fastpfor",
-        "parquet",
-        "thrift",
-        "snappy",
-        "zstd",
-        "miniz",
-        "mbedtls",
-        "lz4",
-        "roaring_bitmap",
-        "simsimd",
-        "yyjson",
-    ] {
-        let lib_path = build_dir
-            .join("build")
-            .join("third_party")
-            .join(dir)
-            .canonicalize()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Could not find {}/build/third_party/{}",
-                    build_dir.display(),
-                    dir
-                )
-            });
-        println!("cargo:rustc-link-search=native={}", lib_path.display());
-    }
-
     vec![
         lbug_root.join("src/include"),
         build_dir.join("build/src"),
@@ -397,7 +363,7 @@ fn main() {
 
     let manifest_dir = manifest_dir();
     let mut bundled = false;
-    let mut link_bundled_deps = false;
+    let link_bundled_deps = false;
     let mut include_paths = vec![manifest_dir.join("include")];
 
     if let (Ok(lbug_lib_dir), Ok(lbug_include)) =
@@ -412,7 +378,6 @@ fn main() {
     } else {
         include_paths.extend(build_bundled_cmake());
         bundled = true;
-        link_bundled_deps = true;
         println!("cargo:rustc-env=LBUG_PRECOMPILED_SOURCE=source");
         println!("cargo:rustc-env=LBUG_PRECOMPILED_LIBRARY_DIR=");
     }
