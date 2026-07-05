@@ -38,6 +38,7 @@ uuid = "1.6"
 [build-dependencies]
 cmake = "0.1"
 cxx-build = "=1.0.138" # should match the `cxx` version
+openssl-sys = "0.9"
 rustversion = "1"
 
 [dev-dependencies]

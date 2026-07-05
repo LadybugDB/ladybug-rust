@@ -40,20 +40,9 @@ fn link_libraries(link_bundled_deps: bool) {
             println!("cargo:rustc-link-lib=dylib=stdc++");
         }
 
-        // liblbug.a requires OpenSSL — try pkg-config for the lib path, then emit link directives
-        if let Ok(output) = std::process::Command::new("pkg-config")
-            .args(["--variable=libdir", "openssl"])
-            .output()
-        {
-            if output.status.success() {
-                let lib_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !lib_dir.is_empty() {
-                    println!("cargo:rustc-link-search=native={lib_dir}");
-                }
-            }
-        }
-        println!("cargo:rustc-link-lib=dylib=ssl");
-        println!("cargo:rustc-link-lib=dylib=crypto");
+        // liblbug.a requires OpenSSL — the openssl-sys build-dependency handles
+        // discovery via pkg-config, OPENSSL_* env vars, or vendored source.
+        // Its build.rs emits the necessary cargo:rustc-link-lib directives.
 
         if !link_bundled_deps {
             return;
