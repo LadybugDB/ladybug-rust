@@ -88,6 +88,10 @@ fn link_libraries(link_bundled_deps: bool) {
             println!("cargo:rustc-link-lib=dylib=msvcrt");
             println!("cargo:rustc-link-lib=dylib=shell32");
             println!("cargo:rustc-link-lib=dylib=ole32");
+            println!("cargo:rustc-link-lib=dylib=advapi32");
+            println!("cargo:rustc-link-lib=dylib=crypt32");
+            println!("cargo:rustc-link-lib=dylib=user32");
+            println!("cargo:rustc-link-lib=dylib=ws2_32");
         } else if cfg!(target_os = "macos") {
             println!("cargo:rustc-link-lib=dylib=c++");
         } else {
