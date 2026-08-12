@@ -4,98 +4,49 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Guard: this script is Windows-only by design (build.rs only calls
+# it when cfg!(windows) and no sh is available).
+if ($env:OS -ne "Windows_NT") {
+    Write-Error "download_lbug.ps1 is a Windows-only script. Use download_lbug.sh on this platform."
+    exit 1
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 
+# Configuration (env vars with defaults matching the upstream .sh)
 $LibKind = if ($env:LBUG_LIB_KIND) { $env:LBUG_LIB_KIND } else { "static" }
-$LinuxVariant = if ($env:LBUG_LINUX_VARIANT) { $env:LBUG_LINUX_VARIANT } else { "compat" }
 $Repository = if ($env:LBUG_GITHUB_REPOSITORY) { $env:LBUG_GITHUB_REPOSITORY } else { "LadybugDB/ladybug" }
 $RunId = if ($env:LBUG_PRECOMPILED_RUN_ID) { $env:LBUG_PRECOMPILED_RUN_ID } else { "" }
 $VersionOverride = if ($env:LBUG_VERSION) { $env:LBUG_VERSION } else { "" }
+$TargetDir = if ($env:LBUG_TARGET_DIR) { $env:LBUG_TARGET_DIR } else { Join-Path $ProjectDir ".cache" "lbug-prebuilt" "lib" }
 
 if ($LibKind -ne "shared" -and $LibKind -ne "static") {
     Write-Error "Unsupported LBUG_LIB_KIND: $LibKind (expected 'shared' or 'static')"
     exit 1
 }
 
-if ($LinuxVariant -ne "compat" -and $LinuxVariant -ne "perf") {
-    Write-Error "Unsupported LBUG_LINUX_VARIANT: $LinuxVariant (expected 'compat' or 'perf')"
+$Arch = $env:PROCESSOR_ARCHITECTURE
+if ($Arch -eq "AMD64") {
+    $Arch = "x86_64"
+} elseif ($Arch -eq "ARM64") {
+    $Arch = "arm64"
+}
+
+# Only x86_64 prebuilt archives are published for Windows.
+if ($Arch -ne "x86_64") {
+    Write-Error "Unsupported Windows architecture: $Arch (only x86_64 prebuilt archives are published)"
     exit 1
 }
 
-$TargetDir = if ($env:LBUG_TARGET_DIR) { $env:LBUG_TARGET_DIR } else { Join-Path $ProjectDir ".cache" "lbug-prebuilt" "lib" }
-
-$Os = ""
-$Arch = ""
-
-if ($IsWindows) {
-    $Os = "windows"
-    $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") { "x86_64" } elseif ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { $env:PROCESSOR_ARCHITECTURE }
-} elseif ($IsMacOS) {
-    $Os = "macos"
-    $Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64) { "arm64" } else { "x86_64" }
-} elseif ($IsLinux) {
-    $Os = "linux"
-    $Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64) { "aarch64" } else { "x86_64" }
+if ($LibKind -eq "static") {
+    $Archive = "liblbug-static-windows-x86_64.zip"
+    $ArtifactName = "liblbug-static-windows-x86_64"
+    $LibName = "lbug.lib"
 } else {
-    $Os = "windows"
-    $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") { "x86_64" } elseif ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { $env:PROCESSOR_ARCHITECTURE }
-}
-
-$Archive = ""
-$LibName = ""
-$ArtifactName = ""
-
-switch ($Os) {
-    "macos" {
-        if ($Arch -ne "x86_64" -and $Arch -ne "arm64") {
-            Write-Error "Unsupported macOS architecture: $Arch"
-            exit 1
-        }
-        if ($LibKind -eq "static") {
-            $Archive = "liblbug-static-osx-${Arch}.tar.gz"
-            $ArtifactName = "liblbug-static-osx-${Arch}"
-            $LibName = "liblbug.a"
-        } else {
-            $Archive = "liblbug-osx-${Arch}.tar.gz"
-            $ArtifactName = "liblbug-osx-${Arch}"
-            $LibName = "liblbug.dylib"
-        }
-    }
-    "linux" {
-        if ($Arch -ne "x86_64" -and $Arch -ne "aarch64") {
-            Write-Error "Unsupported Linux architecture: $Arch"
-            exit 1
-        }
-        if ($LibKind -eq "static") {
-            $Archive = "liblbug-static-linux-${Arch}-${LinuxVariant}.tar.gz"
-            $ArtifactName = "liblbug-static-linux-${Arch}-${LinuxVariant}"
-            $LibName = "liblbug.a"
-        } else {
-            $Archive = "liblbug-linux-${Arch}.tar.gz"
-            $ArtifactName = "liblbug-linux-${Arch}"
-            $LibName = "liblbug.so"
-        }
-    }
-    "windows" {
-        if ($Arch -ne "x86_64") {
-            Write-Error "Unsupported Windows architecture: $Arch"
-            exit 1
-        }
-        if ($LibKind -eq "static") {
-            $Archive = "liblbug-static-windows-${Arch}.zip"
-            $ArtifactName = "liblbug-static-windows-${Arch}"
-            $LibName = "lbug.lib"
-        } else {
-            $Archive = "liblbug-windows-${Arch}.zip"
-            $ArtifactName = "liblbug-windows-${Arch}"
-            $LibName = "lbug_shared.dll"
-        }
-    }
-    default {
-        Write-Error "Unsupported OS: $Os"
-        exit 1
-    }
+    $Archive = "liblbug-windows-x86_64.zip"
+    $ArtifactName = "liblbug-windows-x86_64"
+    $LibName = "lbug_shared.dll"
 }
 
 $LibPath = Join-Path $TargetDir $LibName
@@ -140,11 +91,7 @@ try {
     }
 
     $ArchivePath = Join-Path $TmpDir $Archive
-    if ($Archive.EndsWith(".zip")) {
-        Expand-Archive -Path $ArchivePath -DestinationPath $TargetDir -Force
-    } else {
-        tar xzf $ArchivePath -C $TargetDir
-    }
+    Expand-Archive -Path $ArchivePath -DestinationPath $TargetDir -Force
 
     Write-Output "Installed ${Archive} from ${SourceDesc} to $TargetDir"
 } finally {
