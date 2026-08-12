@@ -375,7 +375,16 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
         .define("BUILD_SINGLE_FILE_HEADER", "OFF")
         .define("AUTO_UPDATE_GRAMMAR", "OFF");
     if cfg!(windows) {
-        build.generator("Ninja");
+        if Command::new("ninja")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            build.generator("Ninja");
+        }
         build.cxxflag("/EHsc");
         build.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
         build.define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW");
