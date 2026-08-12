@@ -19,7 +19,7 @@ $LibKind = if ($env:LBUG_LIB_KIND) { $env:LBUG_LIB_KIND } else { "static" }
 $Repository = if ($env:LBUG_GITHUB_REPOSITORY) { $env:LBUG_GITHUB_REPOSITORY } else { "LadybugDB/ladybug" }
 $RunId = if ($env:LBUG_PRECOMPILED_RUN_ID) { $env:LBUG_PRECOMPILED_RUN_ID } else { "" }
 $VersionOverride = if ($env:LBUG_VERSION) { $env:LBUG_VERSION } else { "" }
-$TargetDir = if ($env:LBUG_TARGET_DIR) { $env:LBUG_TARGET_DIR } else { Join-Path $ProjectDir ".cache" "lbug-prebuilt" "lib" }
+$TargetDir = if ($env:LBUG_TARGET_DIR) { $env:LBUG_TARGET_DIR } else { [System.IO.Path]::Combine($ProjectDir, ".cache", "lbug-prebuilt", "lib") }
 
 if ($LibKind -ne "shared" -and $LibKind -ne "static") {
     Write-Error "Unsupported LBUG_LIB_KIND: $LibKind (expected 'shared' or 'static')"
@@ -76,18 +76,24 @@ try {
             Write-Error "Artifact ${ArtifactName} does not contain ${Archive}"
             exit 1
         }
-        Move-Item -Path (Join-Path $TmpDir "artifact" $ExtractedArchive) -Destination (Join-Path $TmpDir $Archive) -Force
+        Move-Item -Path ([System.IO.Path]::Combine($TmpDir, "artifact", $ExtractedArchive)) -Destination ([System.IO.Path]::Combine($TmpDir, $Archive)) -Force
         $SourceDesc = "run:${RunId}/${ArtifactName}"
     } else {
         if ($VersionOverride) {
             $Version = $VersionOverride -replace '^v', ''
+            $DownloadUrl = "https://github.com/${Repository}/releases/download/v${Version}/${Archive}"
+            $SourceDesc = "release:v${Version}"
         } else {
-            $Release = Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/${Repository}/releases/latest"
-            $Version = $Release.tag_name -replace '^v', ''
+            $DownloadUrl = "https://github.com/${Repository}/releases/latest/download/${Archive}"
+            $SourceDesc = "release:latest"
         }
-        $DownloadUrl = "https://github.com/${Repository}/releases/download/v${Version}/${Archive}"
-        Invoke-WebRequest -UseBasicParsing $DownloadUrl -OutFile (Join-Path $TmpDir $Archive)
-        $SourceDesc = "release:v${Version}"
+        try {
+            Invoke-WebRequest -UseBasicParsing $DownloadUrl -OutFile (Join-Path $TmpDir $Archive)
+        } catch {
+            $statusCode = try { $_.Exception.Response.StatusCode.value__ } catch { 0 }
+            Write-Error "Failed to download ${Archive} from ${DownloadUrl} (HTTP ${statusCode}). Check that the release exists and has this asset."
+            exit 1
+        }
     }
 
     $ArchivePath = Join-Path $TmpDir $Archive
@@ -103,7 +109,7 @@ if (-not (Test-Path $LibPath)) {
     exit 1
 }
 
-$OutEnvFile = if ($EnvFile) { $EnvFile } else { Join-Path $ProjectDir ".cache" "lbug-prebuilt.env" }
+$OutEnvFile = if ($EnvFile) { $EnvFile } else { [System.IO.Path]::Combine($ProjectDir, ".cache", "lbug-prebuilt.env") }
 $EnvFileDir = Split-Path -Parent $OutEnvFile
 if (-not (Test-Path $EnvFileDir)) {
     New-Item -ItemType Directory -Force $EnvFileDir | Out-Null
@@ -111,7 +117,7 @@ if (-not (Test-Path $EnvFileDir)) {
 @"
 LBUG_LIBRARY_DIR=$TargetDir
 LBUG_INCLUDE_DIR=$TargetDir
-"@ | Set-Content -Path $OutEnvFile
+"@ | Set-Content -Path $OutEnvFile -Encoding utf8
 
 Write-Output "Wrote $OutEnvFile"
 Write-Output "Resolved precompiled library: $LibPath"
