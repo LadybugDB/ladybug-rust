@@ -1,5 +1,6 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const PREBUILT_CACHE_DIR: &str = ".cache/lbug-prebuilt";
 
@@ -13,6 +14,59 @@ fn link_mode() -> &'static str {
 
 fn get_target() -> String {
     env::var("PROFILE").unwrap()
+}
+
+fn link_openssl() {
+    for var in ["OPENSSL_DIR", "OPENSSL_ROOT_DIR"] {
+        if let Ok(dir) = env::var(var) {
+            let path = PathBuf::from(&dir);
+            let lib_dir = path.join("lib");
+            let search = if lib_dir.is_dir() { lib_dir } else { path };
+            println!("cargo:rustc-link-search=native={}", search.display());
+            return;
+        }
+    }
+
+    match vcpkg::find_package("openssl") {
+        Ok(_) => return,
+        Err(e) => println!("cargo:warning=vcpkg did not find openssl: {e}"),
+    }
+
+    if let Ok(output) = Command::new("pkg-config")
+        .args(["--variable=libdir", "openssl"])
+        .output()
+    {
+        if output.status.success() {
+            let lib_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !lib_dir.is_empty() {
+                let path = PathBuf::from(&lib_dir);
+                if path.is_dir() {
+                    println!("cargo:rustc-link-search=native={}", path.display());
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        for prefix in ["/opt/homebrew/opt/openssl/lib", "/usr/local/opt/openssl/lib"] {
+            let path = PathBuf::from(prefix);
+            if path.is_dir() {
+                println!("cargo:rustc-link-search=native={}", path.display());
+                break;
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        for dir in ["/usr/lib", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu"] {
+            let path = PathBuf::from(dir);
+            if path.is_dir() {
+                println!("cargo:rustc-link-search=native={}", path.display());
+            }
+        }
+    }
 }
 
 fn link_libraries(link_bundled_deps: bool) {
@@ -40,20 +94,15 @@ fn link_libraries(link_bundled_deps: bool) {
             println!("cargo:rustc-link-lib=dylib=stdc++");
         }
 
-        // liblbug.a requires OpenSSL — try pkg-config for the lib path, then emit link directives
-        if let Ok(output) = std::process::Command::new("pkg-config")
-            .args(["--variable=libdir", "openssl"])
-            .output()
-        {
-            if output.status.success() {
-                let lib_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !lib_dir.is_empty() {
-                    println!("cargo:rustc-link-search=native={lib_dir}");
-                }
-            }
-        }
-        println!("cargo:rustc-link-lib=dylib=ssl");
-        println!("cargo:rustc-link-lib=dylib=crypto");
+        link_openssl();
+
+        let (ssl_name, crypto_name) = if cfg!(windows) {
+            ("libssl", "libcrypto")
+        } else {
+            ("ssl", "crypto")
+        };
+        println!("cargo:rustc-link-lib=dylib={ssl_name}");
+        println!("cargo:rustc-link-lib=dylib={crypto_name}");
 
         if !link_bundled_deps {
             return;
