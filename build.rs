@@ -1,5 +1,6 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const PREBUILT_CACHE_DIR: &str = ".cache/lbug-prebuilt";
 
@@ -13,6 +14,59 @@ fn link_mode() -> &'static str {
 
 fn get_target() -> String {
     env::var("PROFILE").unwrap()
+}
+
+fn link_openssl() {
+    for var in ["OPENSSL_DIR", "OPENSSL_ROOT_DIR"] {
+        if let Ok(dir) = env::var(var) {
+            let path = PathBuf::from(&dir);
+            let lib_dir = path.join("lib");
+            let search = if lib_dir.is_dir() { lib_dir } else { path };
+            println!("cargo:rustc-link-search=native={}", search.display());
+            return;
+        }
+    }
+
+    match vcpkg::find_package("openssl") {
+        Ok(_) => return,
+        Err(e) => println!("cargo:warning=vcpkg did not find openssl: {e}"),
+    }
+
+    if let Ok(output) = Command::new("pkg-config")
+        .args(["--variable=libdir", "openssl"])
+        .output()
+    {
+        if output.status.success() {
+            let lib_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !lib_dir.is_empty() {
+                let path = PathBuf::from(&lib_dir);
+                if path.is_dir() {
+                    println!("cargo:rustc-link-search=native={}", path.display());
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        for prefix in ["/opt/homebrew/opt/openssl/lib", "/usr/local/opt/openssl/lib"] {
+            let path = PathBuf::from(prefix);
+            if path.is_dir() {
+                println!("cargo:rustc-link-search=native={}", path.display());
+                break;
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        for dir in ["/usr/lib", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu"] {
+            let path = PathBuf::from(dir);
+            if path.is_dir() {
+                println!("cargo:rustc-link-search=native={}", path.display());
+            }
+        }
+    }
 }
 
 fn link_libraries(link_bundled_deps: bool) {
@@ -34,26 +88,25 @@ fn link_libraries(link_bundled_deps: bool) {
             println!("cargo:rustc-link-lib=dylib=msvcrt");
             println!("cargo:rustc-link-lib=dylib=shell32");
             println!("cargo:rustc-link-lib=dylib=ole32");
+            println!("cargo:rustc-link-lib=dylib=advapi32");
+            println!("cargo:rustc-link-lib=dylib=crypt32");
+            println!("cargo:rustc-link-lib=dylib=user32");
+            println!("cargo:rustc-link-lib=dylib=ws2_32");
         } else if cfg!(target_os = "macos") {
             println!("cargo:rustc-link-lib=dylib=c++");
         } else {
             println!("cargo:rustc-link-lib=dylib=stdc++");
         }
 
-        // liblbug.a requires OpenSSL — try pkg-config for the lib path, then emit link directives
-        if let Ok(output) = std::process::Command::new("pkg-config")
-            .args(["--variable=libdir", "openssl"])
-            .output()
-        {
-            if output.status.success() {
-                let lib_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !lib_dir.is_empty() {
-                    println!("cargo:rustc-link-search=native={lib_dir}");
-                }
-            }
-        }
-        println!("cargo:rustc-link-lib=dylib=ssl");
-        println!("cargo:rustc-link-lib=dylib=crypto");
+        link_openssl();
+
+        let (ssl_name, crypto_name) = if cfg!(windows) {
+            ("libssl", "libcrypto")
+        } else {
+            ("ssl", "crypto")
+        };
+        println!("cargo:rustc-link-lib=dylib={ssl_name}");
+        println!("cargo:rustc-link-lib=dylib={crypto_name}");
 
         if !link_bundled_deps {
             return;
@@ -176,32 +229,47 @@ fn try_download_prebuilt_lbug(manifest_dir: &Path) -> bool {
         return true;
     }
 
-    let script = manifest_dir.join("scripts").join("download_lbug.sh");
-    if !script.exists() {
-        return false;
-    }
+    let sh_script = manifest_dir.join("scripts").join("download_lbug.sh");
+    let ps_script = manifest_dir.join("scripts").join("download_lbug.ps1");
 
-    let status = std::process::Command::new("sh")
-        .arg(&script)
-        .env("LBUG_TARGET_DIR", &lib_dir)
-        .current_dir(manifest_dir)
-        .status();
+    if sh_script.exists() {
+        let status = Command::new("sh")
+            .arg(&sh_script)
+            .env("LBUG_TARGET_DIR", &lib_dir)
+            .current_dir(manifest_dir)
+            .status();
 
-    match status {
-        Ok(status) if status.success() && lib_path.exists() => true,
-        Ok(status) => {
-            println!(
-                "cargo:warning=Prebuilt liblbug download failed with status {status}; building from source"
-            );
-            false
-        }
-        Err(error) => {
-            println!(
-                "cargo:warning=Could not run prebuilt liblbug downloader ({error}); building from source"
-            );
-            false
+        match status {
+            Ok(s) if s.success() && lib_path.exists() => return true,
+            Ok(s) => println!(
+                "cargo:warning=Prebuilt liblbug download failed with status {s}; building from source"
+            ),
+            Err(e) => println!(
+                "cargo:warning=Could not run prebuilt liblbug downloader ({e}); building from source"
+            ),
         }
     }
+
+    if cfg!(windows) && ps_script.exists() {
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .arg(&ps_script)
+            .env("LBUG_TARGET_DIR", &lib_dir)
+            .current_dir(manifest_dir)
+            .status();
+
+        match status {
+            Ok(s) if s.success() && lib_path.exists() => return true,
+            Ok(s) => println!(
+                "cargo:warning=Prebuilt liblbug download failed with status {s}; building from source"
+            ),
+            Err(e) => println!(
+                "cargo:warning=Could not run prebuilt liblbug downloader ({e}); building from source"
+            ),
+        }
+    }
+
+    false
 }
 
 fn use_prebuilt_lbug(manifest_dir: &Path) -> Option<Vec<PathBuf>> {
@@ -235,7 +303,10 @@ fn get_lbug_root() -> PathBuf {
         return bundled_root;
     }
     if cfg!(windows) {
-        return manifest_dir.join("../..");
+        let in_source_root = manifest_dir.join("../..");
+        if in_source_root.join("CMakeLists.txt").exists() {
+            return in_source_root;
+        }
     }
 
     let lbug_dir = manifest_dir.join("lbug-src");
@@ -297,7 +368,16 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
         .define("BUILD_SINGLE_FILE_HEADER", "OFF")
         .define("AUTO_UPDATE_GRAMMAR", "OFF");
     if cfg!(windows) {
-        build.generator("Ninja");
+        if Command::new("ninja")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            build.generator("Ninja");
+        }
         build.cxxflag("/EHsc");
         build.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
         build.define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW");
