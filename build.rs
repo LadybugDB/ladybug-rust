@@ -303,7 +303,10 @@ fn get_lbug_root() -> PathBuf {
         return bundled_root;
     }
     if cfg!(windows) {
-        return manifest_dir.join("../..");
+        let in_source_root = manifest_dir.join("../..");
+        if in_source_root.join("CMakeLists.txt").exists() {
+            return in_source_root;
+        }
     }
 
     let lbug_dir = manifest_dir.join("lbug-src");
