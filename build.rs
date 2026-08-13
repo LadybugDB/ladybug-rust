@@ -232,16 +232,8 @@ fn try_download_prebuilt_lbug(manifest_dir: &Path) -> bool {
     let sh_script = manifest_dir.join("scripts").join("download_lbug.sh");
     let ps_script = manifest_dir.join("scripts").join("download_lbug.ps1");
 
-    let has_sh = std::process::Command::new("sh")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if has_sh && sh_script.exists() {
-        let status = std::process::Command::new("sh")
+    if sh_script.exists() {
+        let status = Command::new("sh")
             .arg(&sh_script)
             .env("LBUG_TARGET_DIR", &lib_dir)
             .current_dir(manifest_dir)
@@ -256,7 +248,9 @@ fn try_download_prebuilt_lbug(manifest_dir: &Path) -> bool {
                 "cargo:warning=Could not run prebuilt liblbug downloader ({e}); building from source"
             ),
         }
-    } else if cfg!(windows) && ps_script.exists() {
+    }
+
+    if cfg!(windows) && ps_script.exists() {
         let status = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-File"])
             .arg(&ps_script)
@@ -273,10 +267,6 @@ fn try_download_prebuilt_lbug(manifest_dir: &Path) -> bool {
                 "cargo:warning=Could not run prebuilt liblbug downloader ({e}); building from source"
             ),
         }
-    } else if !has_sh {
-        println!(
-            "cargo:warning=No shell found; install git or bash for prebuilt liblbug download"
-        );
     }
 
     false
