@@ -180,6 +180,237 @@ fn prebuilt_lib_dir(manifest_dir: &Path) -> PathBuf {
         .join("lib")
 }
 
+/// Global (default-visibility) symbol prefixes belonging to the vendored C
+/// dependencies bundled into the prebuilt `liblbug.a` (zstd, lz4, simsimd,
+/// `CRoaring`, mbedtls, yyjson, brotli). A consumer that independently links
+/// another copy of any of these - e.g. simsimd via another embedded DB
+/// engine, or zstd via a compression crate - hits duplicate-symbol errors,
+/// made unavoidable on Rust >=1.82 where `+whole-archive` force-includes
+/// every one of these regardless of whether lbug's own code reaches it.
+/// `localize_vendored_symbols` below hides them from the link with
+/// `objcopy --localize-symbol`, leaving only lbug's own C API (the
+/// `lbug_`/`connection_`/`query_result_`/... names declared in
+/// `include/lbug_rs.h` and `include/lbug_arrow.h`) globally visible.
+///
+/// Confirmed via `nm -g --defined-only` against the v0.18.0 prebuilt
+/// archive that every one of these prefixes is actually present, that none
+/// of them appear in `include/lbug_rs.h` or `include/lbug_arrow.h`, and that
+/// after localization the only non-mangled global symbols left are the
+/// `lbug_*` ones. `ZDICT_`/`HUF_`/`FSE_` (zstd's dictionary/entropy coders)
+/// have zero current matches but are kept for a future liblbug build that
+/// enables them - an unmatched `-w` glob is a no-op, not an error.
+///
+/// C++-mangled vendored symbols (the antlr4 runtime, httplib, the vendored
+/// miniz/parquet reader) are intentionally not included here: some are
+/// already renamed by upstream into an `lbug_`-prefixed C++ namespace
+/// (`lbug_snappy::`, `lbug_parquet::`) for exactly this reason, and blindly
+/// localizing raw mangled C++ names risks RTTI/typeinfo symbols that a
+/// prefix-based glob can't reason about safely.
+const VENDORED_SYMBOL_PREFIXES: &[&str] = &[
+    // zstd
+    "ZSTD_",
+    "ZDICT_",
+    "HUF_",
+    "FSE_", //
+    // lz4
+    "LZ4_",
+    "LZ4F_",
+    "LZ4HC_", //
+    // simsimd - the actual collider reproduced against another embedded
+    // vector-search-capable DB engine sharing this binary
+    "simsimd_", //
+    // CRoaring: the public roaring_/roaring64_ API, its ART backend, and
+    // the array/bitset/run container + array-util internals it links with
+    // default visibility under their own operation names rather than a
+    // shared library prefix
+    "roaring_",
+    "roaring64_",
+    "ra_",
+    "art_",
+    "bitset_",
+    "array_",
+    "run_",
+    "container_",
+    "croaring_",
+    "CROARING_",
+    "intersect_",
+    "intersection_",
+    "union_",
+    "xor_",
+    "difference_",
+    "convert_",
+    "shared_container_",
+    "bitsets_",
+    "avx512_",
+    "vbmi2_",
+    "fast_union_",
+    "extend_array",
+    "align_size",
+    "memequals",
+    "interleavedBinarySearch",
+    "binarySearch",
+    "get_copy_of_container",
+    "_avx2_",
+    "_scalar_", //
+    // mbedtls
+    "mbedtls_", //
+    // yyjson
+    "yyjson_",
+    "unsafe_yyjson_", //
+    // brotli
+    "Brotli",
+    "kBrotli",
+    "_kBrotli",
+];
+
+/// Cache-key-scoped location for the post-processed archive, kept beside
+/// (not inside) `prebuilt_lib_dir` so the raw download it's derived from is
+/// never overwritten and stays available as the fallback if processing
+/// fails.
+fn processed_lib_dir(manifest_dir: &Path) -> PathBuf {
+    manifest_dir
+        .join(PREBUILT_CACHE_DIR)
+        .join(prebuilt_cache_key())
+        .join("lib-processed")
+}
+
+fn run_step(cmd: &mut Command, step: &str) -> Result<(), String> {
+    match cmd.output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!(
+            "{step} exited with {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(e) => Err(format!("{step} could not be run: {e}")),
+    }
+}
+
+/// Merge the archive into one relocatable object (binding its internal
+/// references first, so localizing a symbol below can never break a
+/// reference between two of liblbug.a's own object files) and hide every
+/// vendored prefix. This is the expensive step, so it only ever runs into
+/// scratch space under `OUT_DIR`, once, regardless of where the result is
+/// ultimately cached.
+fn merge_and_localize(raw_archive: &Path, scratch_dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(scratch_dir)
+        .map_err(|e| format!("create scratch dir {}: {e}", scratch_dir.display()))?;
+
+    let merged = scratch_dir.join("lbug-merged.o");
+    run_step(
+        Command::new("ld")
+            .arg("-r")
+            .arg("--whole-archive")
+            .arg(raw_archive)
+            .arg("-o")
+            .arg(&merged),
+        "ld -r --whole-archive",
+    )?;
+
+    let localized = scratch_dir.join("lbug-merged-localized.o");
+    let mut objcopy = Command::new("objcopy");
+    objcopy.arg("-w");
+    for prefix in VENDORED_SYMBOL_PREFIXES {
+        objcopy.arg(format!("--localize-symbol={prefix}*"));
+    }
+    objcopy.arg(&merged).arg(&localized);
+    run_step(&mut objcopy, "objcopy --localize-symbol")?;
+
+    Ok(localized)
+}
+
+/// Archive `localized_obj` into `dest_dir/liblbug.a`, writing under a
+/// temporary name first so a build killed mid-`ar` can never leave a
+/// truncated archive that a later build's cache-hit check mistakes for a
+/// complete one.
+fn archive_into(localized_obj: &Path, dest_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest_dir).map_err(|e| format!("create {}: {e}", dest_dir.display()))?;
+
+    let final_path = dest_dir.join(static_lbug_file_name());
+    let tmp_path = dest_dir.join(format!(
+        "{}.tmp-{}",
+        static_lbug_file_name(),
+        std::process::id()
+    ));
+    run_step(
+        Command::new("ar")
+            .arg("rcs")
+            .arg(&tmp_path)
+            .arg(localized_obj),
+        "ar rcs",
+    )?;
+    std::fs::rename(&tmp_path, &final_path)
+        .map_err(|e| format!("rename processed archive into place: {e}"))?;
+    Ok(())
+}
+
+/// Post-process the prebuilt static archive so its vendored dependencies
+/// are hidden from the link (see `VENDORED_SYMBOL_PREFIXES`), returning the
+/// directory to link against instead of `raw_lib_dir` on success.
+///
+/// Runs once per cache key - a processed archive already at the cache path
+/// is reused as-is. If the toolchain this is proven on isn't the one in
+/// use, or `ld`/`objcopy`/`ar` are missing, or any step fails, this falls
+/// back to `None` (the caller links the raw, unprocessed archive) rather
+/// than breaking a build that works today; a `cargo:warning` says what was
+/// skipped and why.
+fn localize_vendored_symbols(manifest_dir: &Path, raw_lib_dir: &Path) -> Option<PathBuf> {
+    // Proven on linux-gnu only: `ld -r --whole-archive` / `objcopy -w
+    // --localize-symbol` is a GNU binutils flow with no direct equivalent
+    // on macOS (Mach-O `ld -r` takes different flags and no
+    // --localize-symbol) or the MSVC toolchain.
+    if !(cfg!(target_os = "linux") && cfg!(target_env = "gnu")) {
+        return None;
+    }
+
+    let preferred_dir = processed_lib_dir(manifest_dir);
+    if preferred_dir.join(static_lbug_file_name()).exists() {
+        return Some(preferred_dir);
+    }
+
+    let out_dir = env::var_os("OUT_DIR")?;
+    let scratch = PathBuf::from(&out_dir).join("lbug-vendored-symbol-localization");
+    let raw_archive = raw_lib_dir.join(static_lbug_file_name());
+
+    let localized_obj = match merge_and_localize(&raw_archive, &scratch) {
+        Ok(p) => p,
+        Err(e) => {
+            println!(
+                "cargo:warning=Could not localize vendored symbols in liblbug.a ({e}); linking the \
+                 unprocessed archive - its bundled vendored dependencies (zstd, simsimd, ...) keep \
+                 default GLOBAL visibility and may duplicate-symbol-conflict with another copy of the \
+                 same dependency elsewhere in the link"
+            );
+            return None;
+        }
+    };
+
+    // manifest_dir/.cache is where try_download_prebuilt_lbug already wrote
+    // the raw archive we just processed, so it's normally writable; a
+    // read-only mount after a warm-cache step (seen in some CI layouts) is
+    // the only case that should land here, and OUT_DIR - always writable,
+    // scoped to this build - is the fallback rather than failing the build
+    // over a cache location that turned out read-only.
+    for dest_dir in [
+        preferred_dir,
+        PathBuf::from(&out_dir).join("lbug-prebuilt-processed"),
+    ] {
+        match archive_into(&localized_obj, &dest_dir) {
+            Ok(()) => return Some(dest_dir),
+            Err(e) => println!(
+                "cargo:warning=Could not write localized liblbug.a to {} ({e}); trying fallback location",
+                dest_dir.display()
+            ),
+        }
+    }
+
+    println!(
+        "cargo:warning=Could not write the localized archive anywhere writable; linking the unprocessed \
+         archive with globally visible vendored symbols"
+    );
+    None
+}
+
 fn prebuilt_source_desc() -> String {
     let repo =
         env::var("LBUG_GITHUB_REPOSITORY").unwrap_or_else(|_| "LadybugDB/ladybug".to_string());
@@ -278,7 +509,9 @@ fn use_prebuilt_lbug(manifest_dir: &Path) -> Option<Vec<PathBuf>> {
     }
 
     let lib_dir = prebuilt_lib_dir(manifest_dir);
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    let link_dir =
+        localize_vendored_symbols(manifest_dir, &lib_dir).unwrap_or_else(|| lib_dir.clone());
+    println!("cargo:rustc-link-search=native={}", link_dir.display());
     println!("cargo:rerun-if-changed={}", lib_dir.display());
     emit_lbug_metadata(&prebuilt_source_desc(), &lib_dir);
     Some(vec![lib_dir])
