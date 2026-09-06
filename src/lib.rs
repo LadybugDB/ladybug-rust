@@ -53,6 +53,36 @@
 //! export LBUG_SHARED=1
 //! ```
 //!
+//! - `LBUG_PREBUILT_CACHE_DIR`: Directory to keep downloaded prebuilt archives in, shared across
+//!   builds. By default they live under the build's `OUT_DIR`.
+//! - `LBUG_LOCALIZE_BUNDLED_SYMBOLS`: On Linux static builds, set to `1` to hide the C symbols of
+//!   the libraries bundled in the prebuilt archive (zstd, lz4, brotli, simsimd, yyjson, CRoaring)
+//!   so they cannot collide with the Rust crates for the same libraries (`zstd-sys`, `lz4-sys`,
+//!   `simsimd`, `croaring-sys`, …) at link time. Needs GNU binutils. Leave it unset when the binary
+//!   loads extensions that resolve those symbols from the host.
+//!
+//! ## Bulk loading
+//!
+//! One `CREATE` or `MERGE` per row costs a full statement each: planning, execution and, outside
+//! an explicit transaction, a commit. Measured through this crate on a 4-vCPU host, a single-row
+//! relationship `MERGE … SET` costs tens of milliseconds of CPU, so loading a few hundred thousand
+//! rows that way takes hours. Load in bulk instead:
+//!
+//! - From files: `COPY Person FROM 'people.csv'` / `COPY Knows FROM 'knows.parquet'`.
+//! - From memory, with the `arrow` feature: register Arrow record batches as tables with
+//!   [`Connection::create_arrow_table`] and [`Connection::create_arrow_rel_table`], then
+//!   `COPY … FROM` them, or query them directly.
+//! - Point lookups by primary key cost about a millisecond of planning each through
+//!   [`Connection::prepare`] + [`Connection::execute`]; fetch a neighbourhood with one
+//!   `MATCH (a)-[r]->(b) WHERE a.id = $id RETURN …` rather than one lookup per neighbour.
+//!
+//! ## Memory
+//!
+//! [`SystemConfig::default`] leaves `buffer_pool_size` at 0, which the engine resolves from the
+//! host's physical memory, so an embedding process reserves a large share of RAM regardless of
+//! the database's size (about 6 GB resident on a 15 GiB host for a 200,000-edge graph). Set
+//! [`SystemConfig::buffer_pool_size`] explicitly when the process shares the machine.
+//!
 //! ## Using Extensions
 //! By default, binaries created using this library will not work with Lbug's
 //! [extensions](https://docs.ladybugdb.com/extensions/) (except on Windows/MSVC, where the linker works differently).
