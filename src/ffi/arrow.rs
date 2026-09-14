@@ -29,6 +29,9 @@ pub(crate) mod ffi_arrow {
 
         #[namespace = "lbug::main"]
         type QueryResult<'db> = crate::ffi::ffi::QueryResult<'db>;
+
+        #[namespace = "lbug::main"]
+        type PreparedStatement = crate::ffi::ffi::PreparedStatement;
     }
 
     unsafe extern "C++" {
@@ -61,6 +64,11 @@ pub(crate) mod ffi_arrow {
 
         #[namespace = "lbug_arrow"]
         fn query_result_get_arrow_schema<'db>(result: &QueryResult<'db>) -> Result<ArrowSchema>;
+
+        #[namespace = "lbug_arrow"]
+        fn prepared_statement_get_arrow_schema(
+            statement: &PreparedStatement,
+        ) -> Result<ArrowSchema>;
     }
 
     #[namespace = "lbug_rs"]

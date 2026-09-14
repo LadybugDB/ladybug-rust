@@ -10,6 +10,7 @@
 namespace lbug_arrow {
 
 ArrowSchema query_result_get_arrow_schema(const lbug::main::QueryResult& result);
+ArrowSchema prepared_statement_get_arrow_schema(const lbug::main::PreparedStatement& stmt);
 bool query_result_has_next_arrow_chunk(lbug::main::QueryResult& result);
 ArrowArray query_result_get_next_arrow_chunk(lbug::main::QueryResult& result, uint64_t chunkSize);
 ArrowArray query_result_get_csr_indptr(const lbug::main::QueryResult& result);
