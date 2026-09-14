@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "common/arrow/arrow_converter.h"
+
 namespace lbug {
 namespace main {
 
@@ -67,6 +69,12 @@ ArrowSchema query_result_get_arrow_schema(const lbug::main::QueryResult& result)
     // Could use directly, except that we can't (yet) mark ArrowSchema as being safe to store in a
     // cxx::UniquePtr
     return *result.getArrowSchema();
+}
+
+ArrowSchema prepared_statement_get_arrow_schema(const lbug::main::PreparedStatement& stmt) {
+    // Schema only: names/types come from the bound and planned statement, no execution.
+    return *lbug::common::ArrowConverter::toArrowSchema(stmt.getColumnTypes(),
+        stmt.getColumnNames(), false /* fallbackExtensionTypes */);
 }
 
 bool query_result_has_next_arrow_chunk(lbug::main::QueryResult& result) {

@@ -56,6 +56,19 @@ impl PreparedStatement {
     pub fn is_read_only(&self) -> bool {
         ffi::prepared_statement_is_read_only(&self.statement)
     }
+
+    #[cfg(feature = "arrow")]
+    /// Returns the query's result schema as Arrow without executing it.
+    ///
+    /// The schema comes from the bound and planned statement, so this is
+    /// cheap even for expensive queries.
+    ///
+    /// *Requires the `arrow` feature*
+    pub fn get_arrow_schema(&self) -> Result<arrow::ffi::FFI_ArrowSchema, Error> {
+        Ok(
+            crate::ffi::arrow::ffi_arrow::prepared_statement_get_arrow_schema(&self.statement)?.0,
+        )
+    }
 }
 
 /// Connections are used to interact with a Database instance.
