@@ -156,13 +156,28 @@ fn static_lbug_file_name() -> &'static str {
 }
 
 fn prebuilt_cache_key() -> String {
-    let source = if let Ok(run_id) = env::var("LBUG_PRECOMPILED_RUN_ID") {
+    let mut source = if let Ok(run_id) = env::var("LBUG_PRECOMPILED_RUN_ID") {
         format!("run-{run_id}")
     } else if let Ok(version) = env::var("LBUG_VERSION") {
         format!("version-{version}")
     } else {
         "latest".to_string()
     };
+
+    // Linux ships more than one static build per release, and the download
+    // script picks one with LBUG_LINUX_VARIANT. Keep them in separate cache
+    // directories, otherwise switching the variant reuses whichever archive
+    // was downloaded first.
+    if cfg!(target_os = "linux") {
+        // Same default as download-liblbug.sh, which also treats an empty
+        // value as unset.
+        let variant = env::var("LBUG_LINUX_VARIANT")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "compat".to_string());
+        source.push('-');
+        source.push_str(&variant);
+    }
 
     source
         .chars()
