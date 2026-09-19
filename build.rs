@@ -99,6 +99,11 @@ fn link_libraries(link_bundled_deps: bool) {
             println!("cargo:rustc-link-lib=dylib=c++");
         } else {
             println!("cargo:rustc-link-lib=dylib=stdc++");
+            // The perf build's buffer manager does 16-byte atomic operations,
+            // which GCC lowers to libatomic calls (`__atomic_compare_exchange`).
+            // The linker passes --as-needed, so builds that don't use it
+            // (compat) get no extra runtime dependency.
+            println!("cargo:rustc-link-lib=dylib=atomic");
         }
 
         link_openssl();
