@@ -102,6 +102,7 @@ pub use connection::{Connection, PreparedStatement};
 pub use database::{Database, SystemConfig};
 pub use error::Error;
 pub use logical_type::LogicalType;
+pub use partition_routing::{Callbacks, PartitionRef, RoutingGuard};
 #[cfg(feature = "arrow")]
 pub use query_result::{ArrowIterator, CsrResult};
 pub use query_result::{CSVOptions, QueryResult};
@@ -112,6 +113,7 @@ mod database;
 mod error;
 mod ffi;
 mod logical_type;
+mod partition_routing;
 mod query_result;
 mod value;
 
