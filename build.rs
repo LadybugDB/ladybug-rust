@@ -556,11 +556,16 @@ fn build_ffi(
     bridge_file: &str,
     out_name: &str,
     source_file: &str,
+    extra_cpp_files: &[&str],
     bundled: bool,
     include_paths: &Vec<PathBuf>,
 ) {
     let mut build = cxx_build::bridge(bridge_file);
     build.file(source_file);
+    for extra in extra_cpp_files {
+        build.file(extra);
+        println!("cargo:rerun-if-changed={extra}");
+    }
 
     if bundled {
         build.define("LBUG_BUNDLED", None);
@@ -576,6 +581,7 @@ fn build_ffi(
     println!("cargo:rerun-if-env-changed=LBUG_SHARED");
 
     println!("cargo:rerun-if-changed=include/lbug_rs.h");
+    println!("cargo:rerun-if-changed=include/lbug_partition_routing.h");
     println!("cargo:rerun-if-changed=src/lbug_rs.cpp");
     println!("cargo:rerun-if-changed={bridge_file}");
     println!("cargo:rerun-if-changed={source_file}");
@@ -604,7 +610,7 @@ fn build_ffi(
 
 fn main() {
     if env::var("DOCS_RS").is_ok() {
-        // Do nothing; we're just building docs and don't need the C++ library
+        // Do nothing more; we're just building docs and don't need the C++ library
         return;
     }
 
@@ -628,6 +634,10 @@ fn main() {
         println!("cargo:rustc-env=LBUG_PRECOMPILED_SOURCE=source");
         println!("cargo:rustc-env=LBUG_PRECOMPILED_LIBRARY_DIR=");
     }
+    // The partition routing shim compiles against the amalgamated `lbug.hpp` alone, so
+    // no source checkout is needed. It is always built: current headers carry the hooks
+    // (prebuilt archives since ladybug #1005).
+    let routing_cpp: &[&str] = &["src/lbug_partition_routing.cpp"];
     if link_mode() == "static" {
         link_libraries(link_bundled_deps);
     }
@@ -635,6 +645,7 @@ fn main() {
         "src/ffi.rs",
         "lbug_rs",
         "src/lbug_rs.cpp",
+        routing_cpp,
         bundled,
         &include_paths,
     );
@@ -644,6 +655,7 @@ fn main() {
             "src/ffi/arrow.rs",
             "lbug_arrow_rs",
             "src/lbug_arrow.cpp",
+            &[],
             bundled,
             &include_paths,
         );
