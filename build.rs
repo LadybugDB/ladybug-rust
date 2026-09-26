@@ -538,7 +538,7 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
     build
         .no_build_target(true)
         .define("BUILD_SHELL", "OFF")
-        .define("BUILD_SINGLE_FILE_HEADER", "OFF")
+        .define("BUILD_SINGLE_FILE_HEADER", "ON")
         .define("AUTO_UPDATE_GRAMMAR", "OFF");
     if cfg!(windows) {
         if Command::new("ninja")
