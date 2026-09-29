@@ -25,6 +25,9 @@ include = [
     "/lbug-src/third_party",
     "/lbug-src/CMakeLists.txt",
     "/lbug-src/tools/CMakeLists.txt",
+    # Read by the single-file-header step that build.rs enables for source builds.
+    "/lbug-src/scripts/collect-single-file-header.py",
+    "/lbug-src/scripts/headers.txt",
 ]
 
 [dependencies]
