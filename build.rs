@@ -618,6 +618,8 @@ fn build_ffi(
         println!("cargo:rerun-if-changed=lbug-src/third_party");
         println!("cargo:rerun-if-changed=lbug-src/CMakeLists.txt");
         println!("cargo:rerun-if-changed=lbug-src/tools/CMakeLists.txt");
+        println!("cargo:rerun-if-changed=lbug-src/scripts/collect-single-file-header.py");
+        println!("cargo:rerun-if-changed=lbug-src/scripts/headers.txt");
     }
 
     if cfg!(windows) {
