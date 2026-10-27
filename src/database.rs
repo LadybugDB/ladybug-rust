@@ -14,113 +14,109 @@ pub struct Database {
 unsafe impl Send for Database {}
 unsafe impl Sync for Database {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 /// Configuration options for the database.
+///
+/// Every field defaults to `None`, which means "use the engine default".
+/// Only explicitly set fields override the engine configuration, so
+/// engine-side default changes apply automatically without a binding update.
 pub struct SystemConfig {
     /// Max size of the buffer pool in bytes
     ///
     /// The larger the buffer pool, the more data from the database files is kept in memory,
     /// reducing the amount of File I/O.
     ///
-    /// Defaults to an auto-detected size
-    buffer_pool_size: u64,
-    /// The maximum number of threads to use when executing queries
-    /// Defaults to auto-detect from the number of processors
-    max_num_threads: u64,
-    /// When true, new columns will be compressed if possible
-    /// Defaults to true
-    enable_compression: bool,
-    /// Whether or not the database can be written to from this instance
-    /// Defaults to not read-only
-    read_only: bool,
-    /// The maximum size of the database. Defaults to 8TB
-    max_db_size: u64,
+    /// If None (default), the engine default (auto-detected size) is used.
+    buffer_pool_size: Option<u64>,
+    /// The maximum number of threads to use when executing queries.
+    /// If None (default), the engine default (auto-detected) is used.
+    max_num_threads: Option<u64>,
+    /// When true, new columns will be compressed if possible.
+    /// If None (default), the engine default is used.
+    enable_compression: Option<bool>,
+    /// Whether or not the database can be written to from this instance.
+    /// If None (default), the engine default (writable) is used.
+    read_only: Option<bool>,
+    /// The maximum size of the database.
+    /// If None (default), the engine default is used.
+    max_db_size: Option<u64>,
     /// If true, the database will automatically checkpoint when the size of the WAL file exceeds the checkpoint threshold.
-    auto_checkpoint: bool,
+    /// If None (default), the engine default is used.
+    auto_checkpoint: Option<bool>,
     /// The threshold of the WAL file size in bytes. When the size of the WAL file exceeds this threshold, the database will checkpoint if autoCheckpoint is true.
-    checkpoint_threshold: i64,
+    /// If None (default), the engine default is used.
+    checkpoint_threshold: Option<i64>,
     /// If true, any WAL replaying failure when loading the database will throw an error. Otherwise, Lbug will silently ignore the failure and replay up to where the error occured.
-    throw_on_wal_replay_failure: bool,
+    /// If None (default), the engine default is used.
+    throw_on_wal_replay_failure: Option<bool>,
     /// If true, the database will use checksums to detect corruption in the WAL file.
-    enable_checksums: bool,
+    /// If None (default), the engine default is used.
+    enable_checksums: Option<bool>,
     /// If true, multiple concurrent write transactions are allowed.
-    /// Defaults to false
-    enable_multi_writes: bool,
+    /// If None (default), the engine default is used.
+    enable_multi_writes: Option<bool>,
 }
 
 #[cfg(test)]
 pub(crate) const SYSTEM_CONFIG_FOR_TESTS: SystemConfig = SystemConfig {
-    buffer_pool_size: 0,
-    max_num_threads: 0,
-    enable_compression: true,
-    read_only: false,
+    buffer_pool_size: None,
+    max_num_threads: None,
+    enable_compression: None,
+    read_only: None,
     // Use a smaller max DB size since these tests don't need a large DB and it limits the number of
     // databases which can be open in a single process
-    max_db_size: 16 * 1024 * 1024 * 1024,
-    auto_checkpoint: true,
-    checkpoint_threshold: -1_i64,
-    throw_on_wal_replay_failure: true,
-    enable_checksums: true,
-    enable_multi_writes: false,
+    max_db_size: Some(16 * 1024 * 1024 * 1024),
+    auto_checkpoint: None,
+    checkpoint_threshold: None,
+    throw_on_wal_replay_failure: None,
+    enable_checksums: None,
+    enable_multi_writes: None,
 };
 
-impl Default for SystemConfig {
-    fn default() -> SystemConfig {
-        SystemConfig {
-            buffer_pool_size: 0,
-            max_num_threads: 0,
-            enable_compression: true,
-            read_only: false,
-            // This is a little weird, but it's a temporary interface
-            max_db_size: u64::from(u32::MAX),
-            auto_checkpoint: true,
-            checkpoint_threshold: -1_i64,
-            throw_on_wal_replay_failure: true,
-            enable_checksums: true,
-            enable_multi_writes: false,
-        }
-    }
+/// Maps an optional boolean to the FFI tristate: -1 keeps the engine default.
+fn bool_or_default(value: Option<bool>) -> i64 {
+    value.map_or(-1, i64::from)
 }
 
 impl SystemConfig {
     pub fn buffer_pool_size(mut self, buffer_pool_size: u64) -> Self {
-        self.buffer_pool_size = buffer_pool_size;
+        self.buffer_pool_size = Some(buffer_pool_size);
         self
     }
     pub fn max_num_threads(mut self, max_num_threads: u64) -> Self {
-        self.max_num_threads = max_num_threads;
+        self.max_num_threads = Some(max_num_threads);
         self
     }
     pub fn enable_compression(mut self, enable_compression: bool) -> Self {
-        self.enable_compression = enable_compression;
+        self.enable_compression = Some(enable_compression);
         self
     }
     pub fn read_only(mut self, read_only: bool) -> Self {
-        self.read_only = read_only;
+        self.read_only = Some(read_only);
         self
     }
     pub fn max_db_size(mut self, max_db_size: u64) -> Self {
-        self.max_db_size = max_db_size;
+        self.max_db_size = Some(max_db_size);
         self
     }
     pub fn auto_checkpoint(mut self, auto_checkpoint: bool) -> Self {
-        self.auto_checkpoint = auto_checkpoint;
+        self.auto_checkpoint = Some(auto_checkpoint);
         self
     }
     pub fn checkpoint_threshold(mut self, checkpoint_threshold: i64) -> Self {
-        self.checkpoint_threshold = checkpoint_threshold;
+        self.checkpoint_threshold = Some(checkpoint_threshold);
         self
     }
     pub fn throw_on_wal_replay_failure(mut self, throw_on_wal_replay_failure: bool) -> Self {
-        self.throw_on_wal_replay_failure = throw_on_wal_replay_failure;
+        self.throw_on_wal_replay_failure = Some(throw_on_wal_replay_failure);
         self
     }
     pub fn enable_checksums(mut self, enable_checksums: bool) -> Self {
-        self.enable_checksums = enable_checksums;
+        self.enable_checksums = Some(enable_checksums);
         self
     }
     pub fn enable_multi_writes(mut self, enable_multi_writes: bool) -> Self {
-        self.enable_multi_writes = enable_multi_writes;
+        self.enable_multi_writes = Some(enable_multi_writes);
         self
     }
 }
@@ -138,16 +134,16 @@ impl Database {
         Ok(Database {
             db: UnsafeCell::new(ffi::new_database(
                 ffi::StringView::new(&path.as_ref().display().to_string()),
-                config.buffer_pool_size,
-                config.max_num_threads,
-                config.enable_compression,
-                config.read_only,
-                config.max_db_size,
-                config.auto_checkpoint,
-                config.checkpoint_threshold,
-                config.throw_on_wal_replay_failure,
-                config.enable_checksums,
-                config.enable_multi_writes,
+                config.buffer_pool_size.unwrap_or(0),
+                config.max_num_threads.unwrap_or(0),
+                bool_or_default(config.enable_compression),
+                bool_or_default(config.read_only),
+                config.max_db_size.unwrap_or(u64::MAX),
+                bool_or_default(config.auto_checkpoint),
+                config.checkpoint_threshold.unwrap_or(-1),
+                bool_or_default(config.throw_on_wal_replay_failure),
+                bool_or_default(config.enable_checksums),
+                bool_or_default(config.enable_multi_writes),
             )?),
         })
     }
