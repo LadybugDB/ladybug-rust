@@ -78,7 +78,7 @@
 //!
 //! ## Memory
 //!
-//! [`SystemConfig::default`] leaves `buffer_pool_size` at 0, which the engine resolves from the
+//! [`SystemConfig::default`] leaves `buffer_pool_size` unset, which the engine resolves from the
 //! host's physical memory, so an embedding process reserves a large share of RAM regardless of
 //! the database's size (about 6 GB resident on a 15 GiB host for a 200,000-edge graph). Set
 //! [`SystemConfig::buffer_pool_size`] explicitly when the process shares the machine.

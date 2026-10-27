@@ -157,19 +157,22 @@ pub(crate) mod ffi {
         #[namespace = "lbug::main"]
         type Database;
 
-        #[allow(clippy::fn_params_excessive_bools)]
+        // Boolean settings use a tristate: -1 keeps the engine default,
+        // 0/1 set it explicitly. Unset numerics use the existing sentinels
+        // (0 for sizes resolved by the engine, u64::MAX for maxDBSize,
+        // -1 for checkpoint_threshold).
         fn new_database(
             databasePath: StringView,
             bufferPoolSize: u64,
             maxNumThreads: u64,
-            enableCompression: bool,
-            readOnly: bool,
+            enableCompression: i64,
+            readOnly: i64,
             maxDBSize: u64,
-            auto_checkpoint: bool,
+            auto_checkpoint: i64,
             checkpoint_threshold: i64,
-            throw_on_wal_replay_failure: bool,
-            enable_checksums: bool,
-            enableMultiWrites: bool,
+            throw_on_wal_replay_failure: i64,
+            enable_checksums: i64,
+            enableMultiWrites: i64,
         ) -> Result<UniquePtr<Database>>;
 
     }

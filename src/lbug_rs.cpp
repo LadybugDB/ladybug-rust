@@ -72,9 +72,10 @@ std::unique_ptr<std::vector<lbug::common::LogicalType>> logical_type_get_struct_
 }
 
 std::unique_ptr<Database> new_database(std::string_view databasePath, uint64_t bufferPoolSize,
-    uint64_t maxNumThreads, bool enableCompression, bool readOnly, uint64_t maxDBSize,
-    bool autoCheckpoint, int64_t checkpointThreshold, bool throwOnWalReplayFailure,
-    bool enableChecksums, bool enableMultiWrites) {
+    uint64_t maxNumThreads, int64_t enableCompression, int64_t readOnly, uint64_t maxDBSize,
+    int64_t autoCheckpoint, int64_t checkpointThreshold, int64_t throwOnWalReplayFailure,
+    int64_t enableChecksums, int64_t enableMultiWrites) {
+    // Boolean settings use a tristate: negative keeps the engine default.
     auto systemConfig = SystemConfig();
     if (bufferPoolSize > 0) {
         systemConfig.bufferPoolSize = bufferPoolSize;
@@ -82,18 +83,30 @@ std::unique_ptr<Database> new_database(std::string_view databasePath, uint64_t b
     if (maxNumThreads > 0) {
         systemConfig.maxNumThreads = maxNumThreads;
     }
-    systemConfig.readOnly = readOnly;
-    systemConfig.enableCompression = enableCompression;
+    if (enableCompression >= 0) {
+        systemConfig.enableCompression = enableCompression != 0;
+    }
+    if (readOnly >= 0) {
+        systemConfig.readOnly = readOnly != 0;
+    }
     if (maxDBSize != -1u) {
         systemConfig.maxDBSize = maxDBSize;
     }
-    systemConfig.autoCheckpoint = autoCheckpoint;
+    if (autoCheckpoint >= 0) {
+        systemConfig.autoCheckpoint = autoCheckpoint != 0;
+    }
     if (checkpointThreshold >= 0) {
         systemConfig.checkpointThreshold = checkpointThreshold;
     }
-    systemConfig.throwOnWalReplayFailure = throwOnWalReplayFailure;
-    systemConfig.enableChecksums = enableChecksums;
-    systemConfig.enableMultiWrites = enableMultiWrites;
+    if (throwOnWalReplayFailure >= 0) {
+        systemConfig.throwOnWalReplayFailure = throwOnWalReplayFailure != 0;
+    }
+    if (enableChecksums >= 0) {
+        systemConfig.enableChecksums = enableChecksums != 0;
+    }
+    if (enableMultiWrites >= 0) {
+        systemConfig.enableMultiWrites = enableMultiWrites != 0;
+    }
     return std::make_unique<Database>(databasePath, systemConfig);
 }
 

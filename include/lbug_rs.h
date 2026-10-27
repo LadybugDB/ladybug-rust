@@ -115,10 +115,11 @@ inline lbug::common::LogicalTypeID logical_type_get_logical_type_id(
 }
 
 /* Database */
+// Boolean settings use a tristate: negative keeps the engine default.
 std::unique_ptr<lbug::main::Database> new_database(std::string_view databasePath,
-    uint64_t bufferPoolSize, uint64_t maxNumThreads, bool enableCompression, bool readOnly,
-    uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
-    bool throwOnWalReplayFailure, bool enableChecksums, bool enableMultiWrites);
+    uint64_t bufferPoolSize, uint64_t maxNumThreads, int64_t enableCompression, int64_t readOnly,
+    uint64_t maxDBSize, int64_t autoCheckpoint, int64_t checkpointThreshold,
+    int64_t throwOnWalReplayFailure, int64_t enableChecksums, int64_t enableMultiWrites);
 
 void database_set_logging_level(lbug::main::Database& database, const std::string& level);
 
