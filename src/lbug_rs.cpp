@@ -1,5 +1,6 @@
 #include "lbug_rs.h"
 
+#include <limits>
 #include <stdexcept>
 
 using lbug::common::ArrayTypeInfo;
@@ -89,7 +90,11 @@ std::unique_ptr<Database> new_database(std::string_view databasePath, uint64_t b
     if (readOnly >= 0) {
         systemConfig.readOnly = readOnly != 0;
     }
-    if (maxDBSize != -1u) {
+    // NB: compare against the 64-bit max. A bare `-1u` is a 32-bit unsigned
+    // int, so `maxDBSize != -1u` would wrongly treat UINT64_MAX (the "keep
+    // engine default" sentinel the Rust binding sends for None) as an
+    // explicit value.
+    if (maxDBSize != std::numeric_limits<uint64_t>::max()) {
         systemConfig.maxDBSize = maxDBSize;
     }
     if (autoCheckpoint >= 0) {

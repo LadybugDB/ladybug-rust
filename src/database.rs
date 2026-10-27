@@ -310,9 +310,14 @@ mod tests {
             conn.query("create node table testtest1(id int64 primary key)")?;
         }
         {
+            // WAL replay failures must be configured to throw: the engine
+            // default (which this binding now follows) is to silently ignore
+            // them.
             Database::new(
                 db_path.clone(),
-                SYSTEM_CONFIG_FOR_TESTS.enable_checksums(false),
+                SYSTEM_CONFIG_FOR_TESTS
+                    .enable_checksums(false)
+                    .throw_on_wal_replay_failure(true),
             )
             .expect_err("An error should be thrown if the enable_checksums config doesn't match the one used to produce a WAL file");
         }
