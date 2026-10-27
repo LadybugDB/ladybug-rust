@@ -44,7 +44,7 @@ pub struct SystemConfig {
     /// If true, the database will use checksums to detect corruption in the WAL file.
     enable_checksums: bool,
     /// If true, multiple concurrent write transactions are allowed.
-    /// Defaults to false
+    /// Defaults to true
     enable_multi_writes: bool,
 }
 
@@ -61,7 +61,7 @@ pub(crate) const SYSTEM_CONFIG_FOR_TESTS: SystemConfig = SystemConfig {
     checkpoint_threshold: -1_i64,
     throw_on_wal_replay_failure: true,
     enable_checksums: true,
-    enable_multi_writes: false,
+    enable_multi_writes: true,
 };
 
 impl Default for SystemConfig {
@@ -77,7 +77,7 @@ impl Default for SystemConfig {
             checkpoint_threshold: -1_i64,
             throw_on_wal_replay_failure: true,
             enable_checksums: true,
-            enable_multi_writes: false,
+            enable_multi_writes: true,
         }
     }
 }
