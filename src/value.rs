@@ -404,10 +404,22 @@ impl From<&Value> for LogicalType {
                 types: types.clone(),
             },
             Value::UUID(_) => LogicalType::UUID,
-            Value::Decimal(value) => LogicalType::Decimal {
-                scale: value.scale(),
-                precision: value.mantissa().checked_ilog10().unwrap_or(0) + 1,
-            },
+            Value::Decimal(value) => {
+                let scale = value.scale();
+                // Digits of the mantissa's magnitude; 0 has one digit.
+                // unsigned_abs() is exact for every rust_decimal mantissa
+                // (|mantissa| <= 2^96 - 1, far from i128::MIN).
+                let digits = value
+                    .mantissa()
+                    .unsigned_abs()
+                    .checked_ilog10()
+                    .unwrap_or(0)
+                    + 1;
+                LogicalType::Decimal {
+                    scale,
+                    precision: digits.max(scale).min(38),
+                }
+            }
         }
     }
 }
@@ -1152,6 +1164,10 @@ mod tests {
         convert_decimal32: Value::Decimal(dec!(12.3456789)),
         convert_decimal64: Value::Decimal(dec!(12.34567890)),
         convert_decimal128: Value::Decimal(dec!(12.34567890)),
+        convert_decimal_negative: Value::Decimal(dec!(-12345678.123456)),
+        convert_decimal_negative_large: Value::Decimal(dec!(-7922816251426433759.3543950335)),
+        convert_decimal_negative_fraction: Value::Decimal(dec!(-0.9999999999)),
+        convert_decimal_tiny: Value::Decimal(dec!(0.0000000000000000000000000001)),
     }
 
     display_tests! {
@@ -1191,6 +1207,8 @@ mod tests {
         display_decimal32: Value::Decimal(dec!(12.3456789)),
         display_decimal64: Value::Decimal(dec!(12.34567890)),
         display_decimal128: Value::Decimal(dec!(12.34567890)),
+        display_decimal_negative: Value::Decimal(dec!(-12345678.123456)),
+        display_decimal_negative_large: Value::Decimal(dec!(-7922816251426433759.3543950335)),
     }
 
     database_tests! {
@@ -1238,6 +1256,218 @@ mod tests {
         db_decimal32: Value::Decimal(dec!(12.3456789)), "DECIMAL(9, 7)",
         db_decimal64: Value::Decimal(dec!(12.34567890)), "DECIMAL(18, 8)",
         db_decimal128: Value::Decimal(dec!(12.34567890)), "DECIMAL(38, 8)",
+        db_decimal_negative: Value::Decimal(dec!(-12345678.123456)), "DECIMAL(14, 6)",
+        db_decimal_negative_large: Value::Decimal(dec!(-7922816251426433759.3543950335)), "DECIMAL(38, 10)",
+        db_decimal_negative_mid: Value::Decimal(dec!(-9999999.999950001)), "DECIMAL(38, 9)",
+        db_decimal_negative_fraction: Value::Decimal(dec!(-0.9999999999)), "DECIMAL(38, 10)",
+        db_decimal_negative_boundary: Value::Decimal(dec!(-0.32769)), "DECIMAL(38, 5)",
+        db_decimal_negative_boundary_control: Value::Decimal(dec!(-0.32767)), "DECIMAL(38, 5)",
+        db_decimal_negative_one: Value::Decimal(dec!(-1)), "DECIMAL(38, 10)",
+        db_decimal_negative_tiny: Value::Decimal(dec!(-0.0000000001)), "DECIMAL(38, 10)",
+    }
+
+    #[test]
+    /// Tests that the type derived from a negative decimal counts the digits
+    /// of the mantissa's magnitude, not 1 (the pre-fix `checked_ilog10`
+    /// returned `None` for every non-positive mantissa)
+    fn decimal_derived_type_negative() {
+        assert_eq!(
+            LogicalType::from(&Value::Decimal(dec!(-12345678.123456))),
+            LogicalType::Decimal {
+                precision: 14,
+                scale: 6
+            }
+        );
+        assert_eq!(
+            LogicalType::from(&Value::Decimal(dec!(-0.9999999999))),
+            LogicalType::Decimal {
+                precision: 10,
+                scale: 10
+            }
+        );
+        assert_eq!(
+            LogicalType::from(&Value::Decimal(dec!(-1))),
+            LogicalType::Decimal {
+                precision: 1,
+                scale: 0
+            }
+        );
+    }
+
+    #[test]
+    /// Tests that the type derived from the largest-magnitude negative
+    /// decimal uses all 29 digits of its mantissa
+    fn decimal_derived_type_negative_max() {
+        assert_eq!(
+            LogicalType::from(&Value::Decimal(dec!(-7922816251426433759.3543950335))),
+            LogicalType::Decimal {
+                precision: 29,
+                scale: 10
+            }
+        );
+    }
+
+    #[test]
+    /// Tests that a value whose scale exceeds its mantissa's digit count
+    /// derives a valid type with precision raised to the scale (the pre-fix
+    /// derivation produced the invalid DECIMAL(1, 28))
+    fn decimal_derived_type_tiny_scale28() {
+        assert_eq!(
+            LogicalType::from(&Value::Decimal(dec!(0.0000000000000000000000000001))),
+            LogicalType::Decimal {
+                precision: 28,
+                scale: 28
+            }
+        );
+    }
+
+    #[test]
+    /// Tests that zero derives DECIMAL(1, 0), as it did before the fix
+    fn decimal_derived_type_zero() {
+        assert_eq!(
+            LogicalType::from(&Value::Decimal(dec!(0))),
+            LogicalType::Decimal {
+                precision: 1,
+                scale: 0
+            }
+        );
+    }
+
+    #[test]
+    /// Tests that an ordinary positive decimal derives the same type as it
+    /// did before the fix
+    fn decimal_derived_type_positive_unchanged() {
+        assert_eq!(
+            LogicalType::from(&Value::Decimal(dec!(12.34))),
+            LogicalType::Decimal {
+                precision: 4,
+                scale: 2
+            }
+        );
+    }
+
+    #[test]
+    /// Tests that a negative decimal bound into the filed DECIMAL(12, 4)
+    /// column is stored as the correct rescale of the bound value (the
+    /// filed corruption read back -0.0209)
+    fn db_decimal_filed_column_negative() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE Person(name STRING, item DECIMAL(12, 4), PRIMARY KEY(name));",
+        )?;
+        let mut add_person = conn.prepare("CREATE (:Person {name: $name, item: $item});")?;
+        conn.execute(
+            &mut add_person,
+            vec![
+                ("name", "Bob".into()),
+                ("item", Value::Decimal(dec!(-12345678.123456))),
+            ],
+        )?;
+        let result = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
+            .next()
+            .unwrap();
+        assert_eq!(result[0], Value::Decimal(dec!(-12345678.1235)));
+        let result = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
+            .next()
+            .unwrap();
+        assert_eq!(result[0], Value::String("-12345678.1235".to_string()));
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that the largest-magnitude negative decimal bound into the
+    /// filed DECIMAL(38, 10) column round-trips exactly (the filed
+    /// corruption read back 0.0000000001)
+    fn db_decimal_filed_column_negative_large() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE Person(name STRING, item DECIMAL(38, 10), PRIMARY KEY(name));",
+        )?;
+        let mut add_person = conn.prepare("CREATE (:Person {name: $name, item: $item});")?;
+        conn.execute(
+            &mut add_person,
+            vec![
+                ("name", "Bob".into()),
+                (
+                    "item",
+                    Value::Decimal(dec!(-7922816251426433759.3543950335)),
+                ),
+            ],
+        )?;
+        let result = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
+            .next()
+            .unwrap();
+        assert_eq!(
+            result[0],
+            Value::Decimal(dec!(-7922816251426433759.3543950335))
+        );
+        let result = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
+            .next()
+            .unwrap();
+        assert_eq!(
+            result[0],
+            Value::String("-7922816251426433759.3543950335".to_string())
+        );
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that a negative decimal bound into the filed DECIMAL(12, 4)
+    /// column is stored sign-symmetrically with its positive counterpart
+    /// (the filed corruption read back 0.0000)
+    fn db_decimal_filed_column_negative_mid() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE Person(name STRING, item DECIMAL(12, 4), PRIMARY KEY(name));",
+        )?;
+        let mut add_person = conn.prepare("CREATE (:Person {name: $name, item: $item});")?;
+        conn.execute(
+            &mut add_person,
+            vec![
+                ("name", "Bob".into()),
+                ("item", Value::Decimal(dec!(-9999999.999950001))),
+            ],
+        )?;
+        conn.execute(
+            &mut add_person,
+            vec![
+                ("name", "Alice".into()),
+                ("item", Value::Decimal(dec!(9999999.999950001))),
+            ],
+        )?;
+        let negative = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
+            .next()
+            .unwrap();
+        let positive = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Alice\" RETURN a.item;")?
+            .next()
+            .unwrap();
+        let (Value::Decimal(negative), Value::Decimal(positive)) = (&negative[0], &positive[0])
+        else {
+            panic!("expected decimal values");
+        };
+        assert_eq!(*negative, -*positive);
+        assert_ne!(*negative, dec!(0.0000));
+        let as_string = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
+            .next()
+            .unwrap();
+        assert_eq!(as_string[0], Value::String(format!("{negative}")));
+        temp_dir.close()?;
+        Ok(())
     }
 
     #[test]
