@@ -1,6 +1,8 @@
 use crate::logical_type::LogicalType;
+use crate::value::ConversionError;
 use std::fmt;
 
+#[non_exhaustive]
 pub enum Error {
     /// Exception raised by C++ lbug library
     CxxException(cxx::Exception),
@@ -14,6 +16,8 @@ pub enum Error {
     JsonError(serde_json::Error),
     #[cfg(feature = "arrow")]
     ArrowError(arrow::error::ArrowError),
+    /// Error during conversion from lbug values to Rust types
+    ConversionError(ConversionError),
 }
 
 impl std::fmt::Display for Error {
@@ -30,6 +34,7 @@ impl std::fmt::Display for Error {
             Error::JsonError(err) => write!(f, "{err}"),
             #[cfg(feature = "arrow")]
             Error::ArrowError(err) => write!(f, "{err}"),
+            Error::ConversionError(err) => write!(f, "{err}"),
         }
     }
 }
@@ -45,6 +50,7 @@ impl std::error::Error for Error {
         match self {
             Error::CxxException(cxx) => Some(cxx),
             Error::JsonError(err) => Some(err),
+            Error::ConversionError(err) => Some(err),
             _ => None,
         }
     }
@@ -66,5 +72,41 @@ impl From<serde_json::Error> for Error {
 impl From<arrow::error::ArrowError> for Error {
     fn from(item: arrow::error::ArrowError) -> Self {
         Error::ArrowError(item)
+    }
+}
+
+impl From<ConversionError> for Error {
+    fn from(item: ConversionError) -> Self {
+        Error::ConversionError(item)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_conversion_error_source_chain() {
+        let dec_err = rust_decimal::Error::ExceedsMaximumPossibleValue;
+        let conv_err = ConversionError::Decimal(42, 2, dec_err.clone());
+        let top_err: Error = conv_err.into();
+
+        let s1 = std::error::Error::source(&top_err).expect("top_err source");
+        let conv_ref = s1
+            .downcast_ref::<ConversionError>()
+            .expect("downcast to ConversionError");
+        match conv_ref {
+            ConversionError::Decimal(val, scale, _) => {
+                assert_eq!(*val, 42);
+                assert_eq!(*scale, 2);
+            }
+            _ => panic!("expected ConversionError::Decimal"),
+        }
+
+        let s2 = std::error::Error::source(s1).expect("conv_err source");
+        let dec_ref = s2
+            .downcast_ref::<rust_decimal::Error>()
+            .expect("downcast to rust_decimal::Error");
+        assert_eq!(*dec_ref, dec_err);
     }
 }

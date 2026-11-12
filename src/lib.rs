@@ -106,7 +106,7 @@ pub use partition_routing::{Callbacks, PartitionRef, RoutingGuard};
 #[cfg(feature = "arrow")]
 pub use query_result::{ArrowIterator, CsrResult};
 pub use query_result::{CSVOptions, QueryResult};
-pub use value::{InternalID, NodeVal, RelVal, Value};
+pub use value::{ConversionError, InternalID, NodeVal, RelVal, Value};
 
 mod connection;
 mod database;
