@@ -1471,6 +1471,120 @@ mod tests {
     }
 
     #[test]
+    /// Tests that extreme downscales of tiny scale-28 decimals bound into
+    /// the filed DECIMAL(12, 4) column and the DECIMAL(18, 4) column
+    /// deterministically store 0.0000 (pre-fix, the invalid derived
+    /// DECIMAL(1, 28) source type made these store nondeterministic
+    /// garbage such as 0.0004/0.0005 instead)
+    fn db_decimal_downscale_tiny_scale28_deterministic() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE Filed12(name STRING, item DECIMAL(12, 4), PRIMARY KEY(name));",
+        )?;
+        conn.query(
+            "CREATE NODE TABLE Filed18(name STRING, item DECIMAL(18, 4), PRIMARY KEY(name));",
+        )?;
+        conn.query(
+            "CREATE NODE TABLE Control38(name STRING, item DECIMAL(38, 28), PRIMARY KEY(name));",
+        )?;
+
+        // 25 rows of 1e-28 per filed target, plus 5 rows each of 2e-28 and
+        // -1e-28 in the (12, 4) table: 60 filed-class inserts in total.
+        let tiny = Value::Decimal(dec!(0.0000000000000000000000000001));
+        let mut filed12_values = vec![tiny.clone(); 25];
+        filed12_values.extend(vec![
+            Value::Decimal(dec!(0.0000000000000000000000000002));
+            5
+        ]);
+        filed12_values.extend(vec![
+            Value::Decimal(dec!(-0.0000000000000000000000000001));
+            5
+        ]);
+        let filed18_values = vec![tiny.clone(); 25];
+
+        let mut add_filed12 = conn.prepare("CREATE (:Filed12 {name: $name, item: $item});")?;
+        for (i, value) in filed12_values.iter().enumerate() {
+            conn.execute(
+                &mut add_filed12,
+                vec![
+                    ("name", Value::String(format!("row{i}"))),
+                    ("item", value.clone()),
+                ],
+            )?;
+        }
+        let mut add_filed18 = conn.prepare("CREATE (:Filed18 {name: $name, item: $item});")?;
+        for (i, value) in filed18_values.iter().enumerate() {
+            conn.execute(
+                &mut add_filed18,
+                vec![
+                    ("name", Value::String(format!("row{i}"))),
+                    ("item", value.clone()),
+                ],
+            )?;
+        }
+
+        // Every filed-class insert must read back as exactly 0.0000, with
+        // the engine's CAST AS STRING agreeing (pinning the stored bytes,
+        // not just the read conversion).
+        for table in ["Filed12", "Filed18"] {
+            let expected_count = if table == "Filed12" { 35 } else { 25 };
+            let mut count = 0;
+            for result in conn.query(&format!(
+                "MATCH (a:{table}) RETURN a.item, CAST(a.item AS STRING);"
+            ))? {
+                assert_eq!(result[0], Value::Decimal(dec!(0.0000)));
+                assert_eq!(result[1], Value::String("0.0000".to_string()));
+                count += 1;
+            }
+            assert_eq!(count, expected_count);
+        }
+
+        // Half-up tie control: 0.00005 into DECIMAL(12, 4) stores 0.0001,
+        // guarding against the fix disturbing ordinary rescale.
+        conn.execute(
+            &mut add_filed12,
+            vec![
+                ("name", Value::String("tie".to_string())),
+                ("item", Value::Decimal(dec!(0.00005))),
+            ],
+        )?;
+        let result = conn
+            .query(
+                "MATCH (a:Filed12) WHERE a.name = \"tie\" RETURN a.item, CAST(a.item AS STRING);",
+            )?
+            .next()
+            .unwrap();
+        assert_eq!(result[0], Value::Decimal(dec!(0.0001)));
+        assert_eq!(result[1], Value::String("0.0001".to_string()));
+
+        // No-rescale control: 1e-28 into DECIMAL(38, 28) round-trips
+        // exactly (clean pre-fix as well).
+        let mut add_control38 = conn.prepare("CREATE (:Control38 {name: $name, item: $item});")?;
+        conn.execute(
+            &mut add_control38,
+            vec![("name", Value::String("tiny".to_string())), ("item", tiny)],
+        )?;
+        let result = conn
+            .query(
+                "MATCH (a:Control38) WHERE a.name = \"tiny\" RETURN a.item, CAST(a.item AS STRING);",
+            )?
+            .next()
+            .unwrap();
+        assert_eq!(
+            result[0],
+            Value::Decimal(dec!(0.0000000000000000000000000001))
+        );
+        assert_eq!(
+            result[1],
+            Value::String("0.0000000000000000000000000001".to_string())
+        );
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
     /// Tests that the list value is correctly constructed
     fn test_list_get() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
