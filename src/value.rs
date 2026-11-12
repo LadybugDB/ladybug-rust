@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
 
+#[non_exhaustive]
 pub enum ConversionError {
     /// Lbug's internal date as the number of days since 1970-01-01
     Date(i32),
@@ -50,7 +51,11 @@ impl std::fmt::Debug for ConversionError {
 
 impl std::error::Error for ConversionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
+        match self {
+            ConversionError::Decimal(_, _, err) => Some(err),
+            ConversionError::Json(_, err) => Some(err),
+            _ => None,
+        }
     }
 }
 
