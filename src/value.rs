@@ -16,6 +16,9 @@ pub enum ConversionError {
     TimestampMs(i64),
     TimestampSec(i64),
     Json(String, serde_json::Error),
+    /// Lbug's internal decimal as its scaled integer and scale, when it
+    /// exceeds what `rust_decimal` can represent
+    Decimal(i128, u32, rust_decimal::Error),
 }
 
 impl std::fmt::Display for ConversionError {
@@ -27,7 +30,7 @@ impl std::fmt::Display for ConversionError {
 impl std::fmt::Debug for ConversionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use ConversionError::{
-            Date, Json, Timestamp, TimestampMs, TimestampNs, TimestampSec, TimestampTz,
+            Date, Decimal, Json, Timestamp, TimestampMs, TimestampNs, TimestampSec, TimestampTz,
         };
         match self {
             Date(days) => write!(f, "Could not convert Lbug date offset of UNIX_EPOCH + {days} days to time::Date"),
@@ -37,6 +40,10 @@ impl std::fmt::Debug for ConversionError {
             TimestampMs(ms) => write!(f, "Could not convert Lbug timestamp_ms offset of UNIX_EPOCH + {ms} milliseconds to time::OffsetDateTime"),
             TimestampSec(sec) => write!(f, "Could not convert Lbug timestamp_sec offset of UNIX_EPOCH + {sec} seconds to time::OffsetDateTime"),
             Json(value, err) => write!(f, "Could not convert Lbug JSON value {value:?}: {err}"),
+            Decimal(value, scale, err) => write!(
+                f,
+                "Could not convert Lbug decimal value {value} with scale {scale} to rust_decimal::Decimal: {err}"
+            ),
         }
     }
 }
@@ -692,10 +699,10 @@ impl TryFrom<&ffi::Value> for Value {
                         PhysicalTypeID::INT8 => i128::from(ffi::value_get_i8(value)),
                         _ => unreachable!(),
                     };
-                    Ok(Value::Decimal(rust_decimal::Decimal::from_i128_with_scale(
-                        decimal_value,
-                        scale,
-                    )))
+                    let decimal =
+                        rust_decimal::Decimal::try_from_i128_with_scale(decimal_value, scale)
+                            .map_err(|err| ConversionError::Decimal(decimal_value, scale, err))?;
+                    Ok(Value::Decimal(decimal))
                 } else {
                     unreachable!()
                 }
@@ -994,6 +1001,7 @@ impl From<&str> for Value {
 
 #[cfg(test)]
 mod tests {
+    use super::ConversionError;
     use crate::database::SYSTEM_CONFIG_FOR_TESTS;
     use crate::ffi::ffi;
     use crate::{Connection, Database, InternalID, LogicalType, NodeVal, RelVal, Value};
@@ -1075,7 +1083,7 @@ mod tests {
                 let result = conn
                     .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
                     .next()
-                    .unwrap();
+                    .unwrap()?;
                 // TODO: Test equivalence to value constructed inside a a query
                 assert_eq!(result[0], $value);
                 temp_dir.close()?;
@@ -1368,12 +1376,12 @@ mod tests {
         let result = conn
             .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
             .next()
-            .unwrap();
+            .unwrap()?;
         assert_eq!(result[0], Value::Decimal(dec!(-12345678.1235)));
         let result = conn
             .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
             .next()
-            .unwrap();
+            .unwrap()?;
         assert_eq!(result[0], Value::String("-12345678.1235".to_string()));
         temp_dir.close()?;
         Ok(())
@@ -1404,7 +1412,7 @@ mod tests {
         let result = conn
             .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
             .next()
-            .unwrap();
+            .unwrap()?;
         assert_eq!(
             result[0],
             Value::Decimal(dec!(-7922816251426433759.3543950335))
@@ -1412,7 +1420,7 @@ mod tests {
         let result = conn
             .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
             .next()
-            .unwrap();
+            .unwrap()?;
         assert_eq!(
             result[0],
             Value::String("-7922816251426433759.3543950335".to_string())
@@ -1450,11 +1458,11 @@ mod tests {
         let negative = conn
             .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
             .next()
-            .unwrap();
+            .unwrap()?;
         let positive = conn
             .query("MATCH (a:Person) WHERE a.name = \"Alice\" RETURN a.item;")?
             .next()
-            .unwrap();
+            .unwrap()?;
         let (Value::Decimal(negative), Value::Decimal(positive)) = (&negative[0], &positive[0])
         else {
             panic!("expected decimal values");
@@ -1464,7 +1472,7 @@ mod tests {
         let as_string = conn
             .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
             .next()
-            .unwrap();
+            .unwrap()?;
         assert_eq!(as_string[0], Value::String(format!("{negative}")));
         temp_dir.close()?;
         Ok(())
@@ -1534,6 +1542,7 @@ mod tests {
             for result in conn.query(&format!(
                 "MATCH (a:{table}) RETURN a.item, CAST(a.item AS STRING);"
             ))? {
+                let result = result?;
                 assert_eq!(result[0], Value::Decimal(dec!(0.0000)));
                 assert_eq!(result[1], Value::String("0.0000".to_string()));
                 count += 1;
@@ -1555,7 +1564,7 @@ mod tests {
                 "MATCH (a:Filed12) WHERE a.name = \"tie\" RETURN a.item, CAST(a.item AS STRING);",
             )?
             .next()
-            .unwrap();
+            .unwrap()?;
         assert_eq!(result[0], Value::Decimal(dec!(0.0001)));
         assert_eq!(result[1], Value::String("0.0001".to_string()));
 
@@ -1571,7 +1580,7 @@ mod tests {
                 "MATCH (a:Control38) WHERE a.name = \"tiny\" RETURN a.item, CAST(a.item AS STRING);",
             )?
             .next()
-            .unwrap();
+            .unwrap()?;
         assert_eq!(
             result[0],
             Value::Decimal(dec!(0.0000000000000000000000000001))
@@ -1585,12 +1594,228 @@ mod tests {
     }
 
     #[test]
+    /// Tests that reading a stored decimal whose scaled integer exceeds
+    /// `rust_decimal`'s capacity (the filed 9.9999999999999999999999999999 in
+    /// DECIMAL(38, 28), which `rust_decimal`'s parser rounds to
+    /// 10.000000000000000000000000000 at scale 27, so the engine stores
+    /// 10.0000000000000000000000000000) surfaces a conversion error instead
+    /// of panicking
+    fn db_decimal_read_beyond_capacity_precise() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE Person(name STRING, item DECIMAL(38, 28), PRIMARY KEY(name));",
+        )?;
+        let mut add_person = conn.prepare("CREATE (:Person {name: $name, item: $item});")?;
+        conn.execute(
+            &mut add_person,
+            vec![
+                ("name", "Bob".into()),
+                (
+                    "item",
+                    Value::Decimal(
+                        "9.9999999999999999999999999999"
+                            .parse::<rust_decimal::Decimal>()
+                            .expect("filed literal parses, rounding to 10 at scale 27"),
+                    ),
+                ),
+            ],
+        )?;
+        let as_string = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
+            .next()
+            .unwrap()?;
+        assert_eq!(
+            as_string[0],
+            Value::String("10.0000000000000000000000000000".to_string())
+        );
+        let row = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
+            .next();
+        match row {
+            Some(Err(ConversionError::Decimal(scaled, err_scale, err))) => {
+                assert_eq!(scaled, 100000000000000000000000000000);
+                assert_eq!(err_scale, 28);
+                assert_eq!(err, rust_decimal::Error::ExceedsMaximumPossibleValue);
+            }
+            other => panic!("expected Decimal conversion error, got {other:?}"),
+        }
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that reading a stored decimal whose scaled integer exceeds
+    /// `rust_decimal`'s capacity (`rust_decimal` MAX / 10, bound into
+    /// DECIMAL(38, 10), where its scale-10 scaled integer has 38 digits)
+    /// surfaces a conversion error instead of panicking
+    fn db_decimal_read_beyond_capacity_wide() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE Person(name STRING, item DECIMAL(38, 10), PRIMARY KEY(name));",
+        )?;
+        let mut add_person = conn.prepare("CREATE (:Person {name: $name, item: $item});")?;
+        conn.execute(
+            &mut add_person,
+            vec![
+                ("name", "Bob".into()),
+                ("item", Value::Decimal(dec!(7922816251426433759354395033.5))),
+            ],
+        )?;
+        let as_string = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
+            .next()
+            .unwrap()?;
+        assert_eq!(
+            as_string[0],
+            Value::String("7922816251426433759354395033.5000000000".to_string())
+        );
+        let row = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
+            .next();
+        match row {
+            Some(Err(ConversionError::Decimal(scaled, err_scale, err))) => {
+                assert_eq!(scaled, 79228162514264337593543950335000000000);
+                assert_eq!(err_scale, 10);
+                assert_eq!(err, rust_decimal::Error::ExceedsMaximumPossibleValue);
+            }
+            other => panic!("expected Decimal conversion error, got {other:?}"),
+        }
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that reading an engine-created decimal whose scaled integer
+    /// exceeds `rust_decimal`'s capacity (1234567890123456789012345678.0123456789
+    /// in DECIMAL(38, 10), created by an engine-side string cast because the
+    /// binding cannot originate it) surfaces a conversion error instead of
+    /// panicking
+    fn db_decimal_read_beyond_capacity_engine_created() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE Person(name STRING, item DECIMAL(38, 10), PRIMARY KEY(name));",
+        )?;
+        conn.query(
+            "CREATE (:Person {name: 'Bob', item: CAST('1234567890123456789012345678.0123456789' AS DECIMAL(38, 10))});",
+        )?;
+        let as_string = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN CAST(a.item AS STRING);")?
+            .next()
+            .unwrap()?;
+        assert_eq!(
+            as_string[0],
+            Value::String("1234567890123456789012345678.0123456789".to_string())
+        );
+        let row = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
+            .next();
+        match row {
+            Some(Err(ConversionError::Decimal(scaled, err_scale, err))) => {
+                assert_eq!(scaled, 12345678901234567890123456780123456789);
+                assert_eq!(err_scale, 10);
+                assert_eq!(err, rust_decimal::Error::ExceedsMaximumPossibleValue);
+            }
+            other => panic!("expected Decimal conversion error, got {other:?}"),
+        }
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that a beyond-capacity decimal nested in a list surfaces a
+    /// conversion error instead of panicking
+    fn db_decimal_read_beyond_capacity_in_list() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        let row = conn
+            .query(
+                "RETURN [CAST('1234567890123456789012345678.0123456789' AS DECIMAL(38, 10))] AS l;",
+            )?
+            .next();
+        match row {
+            Some(Err(ConversionError::Decimal(scaled, err_scale, err))) => {
+                assert_eq!(scaled, 12345678901234567890123456780123456789);
+                assert_eq!(err_scale, 10);
+                assert_eq!(err, rust_decimal::Error::ExceedsMaximumPossibleValue);
+            }
+            other => panic!("expected Decimal conversion error, got {other:?}"),
+        }
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that the largest representable decimal (stored scaled integer
+    /// equal to `rust_decimal`'s MAX mantissa) and an ordinary small decimal
+    /// still read back successfully through the iterator
+    fn db_decimal_read_representable_boundary() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE Person(name STRING, item DECIMAL(29, 1), PRIMARY KEY(name));",
+        )?;
+        let mut add_person = conn.prepare("CREATE (:Person {name: $name, item: $item});")?;
+        conn.execute(
+            &mut add_person,
+            vec![
+                ("name", "Bob".into()),
+                ("item", Value::Decimal(dec!(7922816251426433759354395033.5))),
+            ],
+        )?;
+        let row = conn
+            .query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.item;")?
+            .next()
+            .unwrap()?;
+        assert_eq!(row[0], Value::Decimal(dec!(7922816251426433759354395033.5)));
+        conn.query("CREATE NODE TABLE Small(name STRING, item DECIMAL(4, 2), PRIMARY KEY(name));")?;
+        let mut add_small = conn.prepare("CREATE (:Small {name: $name, item: $item});")?;
+        conn.execute(
+            &mut add_small,
+            vec![
+                ("name", "Bob".into()),
+                ("item", Value::Decimal(dec!(12.34))),
+            ],
+        )?;
+        let row = conn
+            .query("MATCH (a:Small) WHERE a.name = \"Bob\" RETURN a.item;")?
+            .next()
+            .unwrap()?;
+        assert_eq!(row[0], Value::Decimal(dec!(12.34)));
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that the Decimal conversion error's message names the scaled
+    /// integer, the scale, and the underlying `rust_decimal` error
+    fn decimal_conversion_error_display() {
+        let err = ConversionError::Decimal(
+            12345678901234567890123456780123456789,
+            10,
+            rust_decimal::Error::ExceedsMaximumPossibleValue,
+        );
+        let message = err.to_string();
+        assert!(message.contains("12345678901234567890123456780123456789"));
+        assert!(message.contains("with scale 10"));
+        assert!(message.contains("Number exceeds maximum value that can be represented."));
+    }
+
+    #[test]
     /// Tests that the list value is correctly constructed
     fn test_list_get() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
         let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
         let conn = Connection::new(&db)?;
         for result in conn.query("RETURN [\"Alice\", \"Bob\"] AS l;")? {
+            let result = result?;
             assert_eq!(result.len(), 1);
             assert_eq!(
                 result[0],
@@ -1627,7 +1852,7 @@ mod tests {
             .query(
                 "MATCH (a:Person) WHERE a.registerTime = timestamp(\"2011-08-20 11:25:30\") RETURN a.name;",
             )?
-            .map(|x| match &x[0] {
+            .map(|x| match &x.unwrap()[0] {
                 Value::String(x) => x.clone(),
                 _ => unreachable!(),
             })
@@ -1639,7 +1864,7 @@ mod tests {
         let mut result =
             conn.query("MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.registerTime;")?;
         let result: time::OffsetDateTime =
-            if let Value::Timestamp(timestamp) = result.next().unwrap()[0] {
+            if let Value::Timestamp(timestamp) = result.next().unwrap()?[0] {
                 timestamp
             } else {
                 panic!("Wrong type returned!")
@@ -1656,7 +1881,7 @@ mod tests {
         let conn = Connection::new(&db)?;
         conn.query("CREATE NODE TABLE Person(name STRING, age INT64, PRIMARY KEY(name));")?;
         conn.query("CREATE (:Person {name: \"Alice\", age: 25});")?;
-        let result = conn.query("MATCH (a:Person) RETURN a;")?.next().unwrap();
+        let result = conn.query("MATCH (a:Person) RETURN a;")?.next().unwrap()?;
         assert_eq!(
             result[0],
             Value::Node(NodeVal {
@@ -1702,7 +1927,7 @@ mod tests {
                  RETURN e, b.name;",
             )?
             .next()
-            .unwrap();
+            .unwrap()?;
         assert_eq!(result[1], Value::String("Eve".to_string()));
         assert_eq!(
             result[0],
@@ -1728,7 +1953,7 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let db = Database::new(temp_dir.path().join("test"), SYSTEM_CONFIG_FOR_TESTS)?;
         let conn = Connection::new(&db)?;
-        let result = conn.query("RETURN null")?.next();
+        let result = conn.query("RETURN null")?.next().transpose()?;
         let result = &result.unwrap()[0];
         assert_eq!(result, &Value::Null(LogicalType::String));
         temp_dir.close()?;
@@ -1750,7 +1975,10 @@ mod tests {
             vec![LogicalType::String, LogicalType::Serial]
         );
         let results: Vec<(Value, Value)> = result
-            .map(|mut x| (x.pop().unwrap(), x.pop().unwrap()))
+            .map(|x| {
+                let mut x = x.unwrap();
+                (x.pop().unwrap(), x.pop().unwrap())
+            })
             .collect();
         assert_eq!(
             results,
@@ -1793,7 +2021,7 @@ mod tests {
                 types: types.clone()
             }],
         );
-        let results: Vec<Value> = result.map(|mut x| x.pop().unwrap()).collect();
+        let results: Vec<Value> = result.map(|x| x.unwrap().pop().unwrap()).collect();
         assert_eq!(
             results,
             vec![

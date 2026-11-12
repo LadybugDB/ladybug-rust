@@ -253,13 +253,13 @@ mod tests {
         let conn = Connection::new(&db)?;
         let result = conn.query("CALL current_setting('auto_checkpoint') RETURN *");
         assert_eq!(
-            result?.next().unwrap()[0],
+            result?.next().unwrap()?[0],
             Value::String("False".to_string())
         );
         // check default checkpoint threshold
         let result = conn.query("CALL current_setting('checkpoint_threshold') RETURN *");
         assert_eq!(
-            result?.next().unwrap()[0],
+            result?.next().unwrap()?[0],
             Value::String("16777216".to_string())
         );
         Ok(())
@@ -275,7 +275,7 @@ mod tests {
         let conn = Connection::new(&db)?;
         let result = conn.query("CALL current_setting('checkpoint_threshold') RETURN *");
         assert_eq!(
-            result?.next().unwrap()[0],
+            result?.next().unwrap()?[0],
             Value::String("1234".to_string())
         );
         Ok(())
@@ -294,7 +294,7 @@ mod tests {
         )?;
         let conn = Connection::new(&db)?;
         let result = conn.query("return 1");
-        assert_eq!(result?.next().unwrap()[0], Value::Int64(1));
+        assert_eq!(result?.next().unwrap()?[0], Value::Int64(1));
         Ok(())
     }
 
@@ -339,6 +339,7 @@ mod tests {
         let results: HashSet<String> = conn
             .query("MATCH (p:Person) RETURN p.name")?
             .map(|tuple| {
+                let tuple = tuple.unwrap();
                 assert!(tuple.len() == 1);
                 if let Value::String(value) = &tuple[0] {
                     value.clone()

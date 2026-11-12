@@ -1,5 +1,6 @@
 use crate::ffi::ffi;
 use crate::logical_type::LogicalType;
+use crate::value::ConversionError;
 use crate::value::Value;
 use cxx::UniquePtr;
 use std::convert::TryInto;
@@ -156,8 +157,15 @@ impl<'db> QueryResult<'db> {
 }
 
 // the underlying C++ type is both data and an iterator (sort-of)
+/// Each row is yielded as a `Result`: if converting any cell of a row
+/// fails, the row yields that first `ConversionError` (the row's remaining
+/// cells are not converted) and the failed row is consumed, so iteration
+/// continues with the following row. Per-row `Result<Vec<Value>>` was
+/// chosen over per-cell `Vec<Result<Value>>` so that handling one row
+/// stays a single `?` for callers; the trade-off is that when multiple
+/// cells of one row would fail, only the first failure is reported.
 impl Iterator for QueryResult<'_> {
-    type Item = Vec<Value>;
+    type Item = Result<Vec<Value>, ConversionError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if ffi::query_result_has_next(self.result.as_ref().unwrap()) {
@@ -165,14 +173,12 @@ impl Iterator for QueryResult<'_> {
             let mut result = vec![];
             for i in 0..ffi::flat_tuple_len(flat_tuple.as_ref().unwrap()) {
                 let value = ffi::flat_tuple_get_value(flat_tuple.as_ref().unwrap(), i);
-                // TODO: Return result instead of unwrapping?
-                // Unfortunately, as an iterator, this would require producing
-                // Vec<Result<Value>>, though it would be possible to turn that into
-                // Result<Vec<Value>> instead, but it would lose information when multiple failures
-                // occur.
-                result.push(value.try_into().unwrap());
+                match value.try_into() {
+                    Ok(value) => result.push(value),
+                    Err(err) => return Some(Err(err)),
+                }
             }
-            Some(result)
+            Some(Ok(result))
         } else {
             None
         }
@@ -254,6 +260,8 @@ mod tests {
     use crate::database::Database;
     use crate::database::SYSTEM_CONFIG_FOR_TESTS;
     use crate::logical_type::LogicalType;
+    use crate::value::{ConversionError, Value};
+    use rust_decimal_macros::dec;
 
     #[test]
     fn test_query_result_metadata() -> anyhow::Result<()> {
@@ -277,6 +285,39 @@ mod tests {
             result.get_column_data_types(),
             vec![LogicalType::String, LogicalType::Int64]
         );
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn query_result_decimal_error_row_is_consumed_and_iteration_continues() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("test"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query("CREATE NODE TABLE T(id INT64, item DECIMAL(38, 10), PRIMARY KEY(id));")?;
+        conn.query("CREATE (:T {id: 1, item: CAST('1.5' AS DECIMAL(38, 10))});")?;
+        conn.query(
+            "CREATE (:T {id: 2, item: CAST('1234567890123456789012345678.0123456789' AS DECIMAL(38, 10))});",
+        )?;
+        conn.query("CREATE (:T {id: 3, item: CAST('2.5' AS DECIMAL(38, 10))});")?;
+        let mut result = conn.query("MATCH (a:T) RETURN a.item ORDER BY a.id;")?;
+        match result.next() {
+            Some(Ok(row)) => assert_eq!(row[0], Value::Decimal(dec!(1.5))),
+            other => panic!("expected Ok row for 1.5, got {other:?}"),
+        }
+        match result.next() {
+            Some(Err(ConversionError::Decimal(value, scale, err))) => {
+                assert_eq!(value, 12345678901234567890123456780123456789);
+                assert_eq!(scale, 10);
+                assert_eq!(err, rust_decimal::Error::ExceedsMaximumPossibleValue);
+            }
+            other => panic!("expected Decimal conversion error row, got {other:?}"),
+        }
+        match result.next() {
+            Some(Ok(row)) => assert_eq!(row[0], Value::Decimal(dec!(2.5))),
+            other => panic!("expected Ok row for 2.5, got {other:?}"),
+        }
+        assert!(result.next().is_none());
         temp_dir.close()?;
         Ok(())
     }
