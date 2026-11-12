@@ -427,6 +427,9 @@ impl From<&Value> for LogicalType {
                     .checked_ilog10()
                     .unwrap_or(0)
                     + 1;
+                // Note on `.min(38)`: For rust_decimal, mantissa is at most 2^96 - 1 (~7.92e28, <=29 digits)
+                // and scale is at most 28. Therefore `digits.max(scale)` never exceeds 29.
+                // `.min(38)` is strictly unreachable for valid rust_decimal values, but retained as defense-in-depth.
                 LogicalType::Decimal {
                     scale,
                     precision: digits.max(scale).min(38),
@@ -1484,11 +1487,34 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a tiny scale-28 decimal binds with its derived type DECIMAL(28, 28)
+    /// across FFI and can be queried back cleanly without error.
+    fn db_decimal_tiny_scale28_binds_decimal_28_28() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        let tiny = Value::Decimal(dec!(0.0000000000000000000000000001));
+        assert_eq!(
+            LogicalType::from(&tiny),
+            LogicalType::Decimal {
+                precision: 28,
+                scale: 28
+            }
+        );
+        let mut prep = conn.prepare("RETURN $val AS res;")?;
+        let mut result = conn.execute(&mut prep, vec![("val", tiny.clone())])?;
+        let row = result.next().expect("row")?;
+        assert_eq!(row[0], tiny);
+        Ok(())
+    }
+
+    #[test]
     /// Tests that extreme downscales of tiny scale-28 decimals bound into
     /// the filed DECIMAL(12, 4) column and the DECIMAL(18, 4) column
-    /// deterministically store 0.0000 (pre-fix, the invalid derived
-    /// DECIMAL(1, 28) source type made these store nondeterministic
-    /// garbage such as 0.0004/0.0005 instead)
+    /// deterministically store 0.0000. Pins determinism under downscale.
+    /// (Note: pre-fix nondeterministic garbage was reported in author isolation
+    /// testing under derived DECIMAL(1, 28), but was not independently reproduced
+    /// on macOS arm64 where base also stored 0.0000).
     fn db_decimal_downscale_tiny_scale28_deterministic() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
         let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
