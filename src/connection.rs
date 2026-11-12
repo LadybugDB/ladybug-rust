@@ -65,9 +65,7 @@ impl PreparedStatement {
     ///
     /// *Requires the `arrow` feature*
     pub fn get_arrow_schema(&self) -> Result<arrow::ffi::FFI_ArrowSchema, Error> {
-        Ok(
-            crate::ffi::arrow::ffi_arrow::prepared_statement_get_arrow_schema(&self.statement)?.0,
-        )
+        Ok(crate::ffi::arrow::ffi_arrow::prepared_statement_get_arrow_schema(&self.statement)?.0)
     }
 }
 
@@ -101,14 +99,14 @@ impl PreparedStatement {
 ///     let alice_thread = s.spawn(|| -> Result<Vec<Value>, Error> {
 ///         let conn = Connection::new(&db)?;
 ///         let mut result = conn.query("MATCH (a:Person) WHERE a.name = \"Alice\" RETURN a.name AS NAME, a.age AS AGE;")?;
-///         Ok(result.next().unwrap())
+///         Ok(result.next().unwrap().unwrap())
 ///     });
 ///     let bob_thread = s.spawn(|| -> Result<Vec<Value>, Error> {
 ///         let conn = Connection::new(&db)?;
 ///         let mut result = conn.query(
 ///             "MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.name AS NAME, a.age AS AGE;",
 ///         )?;
-///         Ok(result.next().unwrap())
+///         Ok(result.next().unwrap().unwrap())
 ///     });
 ///     Ok((alice_thread.join().unwrap()?, bob_thread.join().unwrap()?))
 ///  })?;
@@ -695,6 +693,7 @@ Invalid input <MATCH (a:Person RETURN>: expected rule oC_SingleQuery (line: 1, o
         conn.query("CREATE (:Person {name: 'Alice', age: 25});")?;
 
         for result in conn.query("MATCH (a:Person) RETURN a.name AS NAME, a.age AS AGE;")? {
+            let result = result?;
             assert_eq!(result.len(), 2);
             assert_eq!(result[0], Value::String("Alice".to_string()));
             assert_eq!(result[1], Value::Int16(25));
@@ -714,6 +713,7 @@ Invalid input <MATCH (a:Person RETURN>: expected rule oC_SingleQuery (line: 1, o
 
         let mut statement = conn.prepare("MATCH (a:Person) WHERE a.age = $age RETURN a.name;")?;
         for result in conn.execute(&mut statement, vec![("age", Value::Int16(25))])? {
+            let result = result?;
             assert_eq!(result.len(), 1);
             assert_eq!(result[0], Value::String("Alice".to_string()));
         }
@@ -752,13 +752,13 @@ Invalid input <MATCH (a:Person RETURN>: expected rule oC_SingleQuery (line: 1, o
         let (alice, bob) = std::thread::scope(|s| -> Result<(Vec<Value>, Vec<Value>)> {
             let alice_thread = s.spawn(|| -> Result<Vec<Value>> {
                 let mut result = conn.query("MATCH (a:Person) WHERE a.name = \"Alice\" RETURN a.name AS NAME, a.age AS AGE;")?;
-                Ok(result.next().unwrap())
+                Ok(result.next().unwrap()?)
             });
             let bob_thread = s.spawn(|| -> Result<Vec<Value>> {
                 let mut result = conn.query(
                     "MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.name AS NAME, a.age AS AGE;",
                 )?;
-                Ok(result.next().unwrap())
+                Ok(result.next().unwrap()?)
             });
 
             Ok((alice_thread.join().unwrap()?, bob_thread.join().unwrap()?))
@@ -785,14 +785,14 @@ Invalid input <MATCH (a:Person RETURN>: expected rule oC_SingleQuery (line: 1, o
             let alice_thread = s.spawn(|| -> Result<Vec<Value>> {
                 let conn = Connection::new(&db)?;
                 let mut result = conn.query("MATCH (a:Person) WHERE a.name = \"Alice\" RETURN a.name AS NAME, a.age AS AGE;")?;
-                Ok(result.next().unwrap())
+                Ok(result.next().unwrap()?)
             });
             let bob_thread = s.spawn(|| -> Result<Vec<Value>> {
                 let conn = Connection::new(&db)?;
                 let mut result = conn.query(
                     "MATCH (a:Person) WHERE a.name = \"Bob\" RETURN a.name AS NAME, a.age AS AGE;",
                 )?;
-                Ok(result.next().unwrap())
+                Ok(result.next().unwrap()?)
             });
 
             Ok((alice_thread.join().unwrap()?, bob_thread.join().unwrap()?))
