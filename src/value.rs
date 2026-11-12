@@ -1839,6 +1839,58 @@ mod tests {
         assert!(message.contains("Number exceeds maximum value that can be represented."));
     }
 
+    fn assert_decimal_eq_with_scale(
+        actual: rust_decimal::Decimal,
+        expected: rust_decimal::Decimal,
+    ) {
+        assert_eq!(actual, expected, "numerical value mismatch");
+        assert_eq!(actual.scale(), expected.scale(), "scale mismatch");
+    }
+
+    #[test]
+    /// Tests boundary transitions across `DuckDB` physical storage types:
+    /// INT16 (p 1-4) -> INT32 (p 5-9) -> INT64 (p 10-18) -> INT128 (p 19-38)
+    fn test_decimal_physical_boundary_transitions() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+
+        let boundaries = [
+            ("DECIMAL(4, 2)", dec!(99.99), "T4_2"),
+            ("DECIMAL(5, 2)", dec!(100.00), "T5_2"),
+            ("DECIMAL(9, 4)", dec!(99999.9999), "T9_4"),
+            ("DECIMAL(10, 4)", dec!(100000.0000), "T10_4"),
+            ("DECIMAL(18, 6)", dec!(999999999999.999999), "T18_6"),
+            ("DECIMAL(19, 6)", dec!(1000000000000.000000), "T19_6"),
+        ];
+
+        for (col_type, val, table_name) in boundaries {
+            conn.query(&format!(
+                "CREATE NODE TABLE {table_name}(name STRING, item {col_type}, PRIMARY KEY(name));"
+            ))?;
+            let mut add_item = conn.prepare(&format!(
+                "CREATE (:{table_name} {{name: $name, item: $item}});"
+            ))?;
+            conn.execute(
+                &mut add_item,
+                vec![("name", "Bob".into()), ("item", Value::Decimal(val))],
+            )?;
+            let row = conn
+                .query(&format!(
+                    "MATCH (a:{table_name}) WHERE a.name = \"Bob\" RETURN a.item;"
+                ))?
+                .next()
+                .unwrap()?;
+            if let Value::Decimal(actual) = row[0] {
+                assert_decimal_eq_with_scale(actual, val);
+            } else {
+                panic!("Expected Value::Decimal, got {:?}", row[0]);
+            }
+        }
+        temp_dir.close()?;
+        Ok(())
+    }
+
     #[test]
     /// Tests that the list value is correctly constructed
     fn test_list_get() -> Result<()> {
