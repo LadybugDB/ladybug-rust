@@ -20,6 +20,10 @@ pub enum ConversionError {
     /// Lbug's internal decimal as its scaled integer and scale, when it
     /// exceeds what `rust_decimal` can represent
     Decimal(i128, u32, rust_decimal::Error),
+    /// A nested value whose own type (second) does not match the declared
+    /// type it would be stored under (first): a list or array element, a map
+    /// key or value, or a union payload
+    TypeMismatch(LogicalType, LogicalType),
 }
 
 impl std::fmt::Display for ConversionError {
@@ -32,6 +36,7 @@ impl std::fmt::Debug for ConversionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use ConversionError::{
             Date, Decimal, Json, Timestamp, TimestampMs, TimestampNs, TimestampSec, TimestampTz,
+            TypeMismatch,
         };
         match self {
             Date(days) => write!(f, "Could not convert Lbug date offset of UNIX_EPOCH + {days} days to time::Date"),
@@ -44,6 +49,10 @@ impl std::fmt::Debug for ConversionError {
             Decimal(value, scale, err) => write!(
                 f,
                 "Could not convert Lbug decimal value {value} with scale {scale} to rust_decimal::Decimal: {err}"
+            ),
+            TypeMismatch(declared, actual) => write!(
+                f,
+                "Value of type {actual:?} does not match the declared type {declared:?} it would be stored under"
             ),
         }
     }
@@ -721,6 +730,38 @@ impl TryFrom<&ffi::Value> for Value {
     }
 }
 
+/// Checks that a nested `value` may be stored under `declared`, the type a
+/// caller declared for it (a list or array element type, a map key or value
+/// type, or a union member type).
+///
+/// The engine stores nested values under the declared type and reinterprets
+/// each element at that type's width, so a mismatch silently corrupts data
+/// at storage time (ladybug-rust#50, #51, #52); the binding is the only
+/// layer that can reject it. Types must match exactly, except that a decimal
+/// value may be stored under a declared decimal type with the same scale
+/// and at least the value's precision, which is exact.
+fn check_nested_type(declared: &LogicalType, value: &Value) -> Result<(), ConversionError> {
+    let actual: LogicalType = value.into();
+    let compatible = match (declared, &actual) {
+        (
+            LogicalType::Decimal {
+                precision: declared_precision,
+                scale: declared_scale,
+            },
+            LogicalType::Decimal {
+                precision: actual_precision,
+                scale: actual_scale,
+            },
+        ) => declared_scale == actual_scale && actual_precision <= declared_precision,
+        _ => *declared == actual,
+    };
+    if compatible {
+        Ok(())
+    } else {
+        Err(ConversionError::TypeMismatch(declared.clone(), actual))
+    }
+}
+
 impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
     // Errors should occur if:
     // - types are heterogeneous in lists
@@ -828,6 +869,9 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 Ok(ffi::create_value_interval(months, days, micros))
             }
             Value::List(typ, value) => {
+                for elem in &value {
+                    check_nested_type(&typ, elem)?;
+                }
                 let mut builder = ffi::create_list();
                 for elem in value {
                     ffi::value_list_insert(builder.pin_mut(), elem.try_into()?);
@@ -865,6 +909,9 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 ))
             }
             Value::Array(typ, value) => {
+                for elem in &value {
+                    check_nested_type(&typ, elem)?;
+                }
                 let mut builder = ffi::create_list();
                 let len = value.len();
                 for elem in value {
@@ -903,8 +950,51 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 Err(crate::Error::ReadOnlyType(LogicalType::RecursiveRel))
             }
             Value::Union { types, value } => {
+                // The engine stores a union like a struct whose first field
+                // is the tag (the index of the active member, a UINT16) and
+                // whose remaining fields are the members, and its parameter
+                // conversion copies the value's children into those fields by
+                // index. Building the value with the payload as the only
+                // child therefore stored the payload's bytes in the tag field
+                // and left the stored value unreadable — rendering it crashed
+                // the engine (ladybug-rust#52). Build the full layout
+                // instead: tag, then one slot per member with the payload in
+                // its member's slot and nulls in the others.
+                let member_idx = types
+                    .iter()
+                    .position(|(_, member_type)| check_nested_type(member_type, &value).is_ok())
+                    .ok_or_else(|| {
+                        ConversionError::TypeMismatch(
+                            LogicalType::Union {
+                                types: types.clone(),
+                            },
+                            (&*value).into(),
+                        )
+                    })?;
+                let tag = u16::try_from(member_idx).map_err(|_| {
+                    ConversionError::TypeMismatch(
+                        LogicalType::Union {
+                            types: types.clone(),
+                        },
+                        (&*value).into(),
+                    )
+                })?;
+                let mut payload = Some(*value);
                 let mut builder = ffi::create_list();
-                ffi::value_list_insert(builder.pin_mut(), (*value).try_into()?);
+                ffi::value_list_insert(builder.pin_mut(), Value::UInt16(tag).try_into()?);
+                for (i, (_, member_type)) in types.iter().enumerate() {
+                    if i == member_idx {
+                        ffi::value_list_insert(
+                            builder.pin_mut(),
+                            payload.take().expect("payload inserted once").try_into()?,
+                        );
+                    } else {
+                        ffi::value_list_insert(
+                            builder.pin_mut(),
+                            Value::Null(member_type.clone()).try_into()?,
+                        );
+                    }
+                }
 
                 Ok(ffi::get_list_value(
                     (&LogicalType::Union { types }).into(),
@@ -1172,10 +1262,12 @@ mod tests {
         convert_struct: Value::Struct(vec![("NAME".to_string(), "Alice".into()), ("AGE".to_string(), 25.into())]),
         convert_internal_id: Value::InternalID(InternalID { table_id: 0, offset: 0 }),
         convert_map: Value::Map((LogicalType::String, LogicalType::Int64), vec![(Value::String("key".to_string()), Value::Int64(24))]),
-        convert_union: Value::Union {
-            types: vec![("Num".to_string(), LogicalType::Int8), ("duration".to_string(), LogicalType::Interval)],
-            value: Box::new(Value::Int8(-127))
-        },
+        // No convert_union entry: the engine's parameter layout for a union
+        // (tag field plus one slot per member) differs from its result
+        // layout (the active member only), so a value-layer round trip is
+        // not an identity for unions. Union conversion is covered on the
+        // database surface by union_parameter_stores_and_renders
+        // (ladybug-rust#52).
         convert_decimal16: Value::Decimal(dec!(12.34)),
         convert_decimal32: Value::Decimal(dec!(12.3456789)),
         convert_decimal64: Value::Decimal(dec!(12.34567890)),
@@ -1212,10 +1304,9 @@ mod tests {
         display_internal_id: Value::InternalID(InternalID { table_id: 0, offset: 0 }),
         // Node and Rel Cannot be easily created on the C++ side
         display_map: Value::Map((LogicalType::String, LogicalType::Int64), vec![(Value::String("key".to_string()), Value::Int64(24))]),
-        display_union: Value::Union {
-            types: vec![("Num".to_string(), LogicalType::Int8), ("duration".to_string(), LogicalType::Interval)],
-            value: Box::new(Value::Int8(-127))
-        },
+        // No display_union entry: the C++ value rendering reads the first
+        // child, which in the parameter layout is the union's tag field, not
+        // the payload (see the convert_union note above).
         display_uuid: Value::UUID(uuid!("00000000-0000-0000-0000-ffff00000000")),
         display_uuid2: Value::UUID(uuid!("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")),
         display_uuid3: Value::UUID(uuid!("a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8")),
@@ -1227,12 +1318,198 @@ mod tests {
         display_decimal_negative_large: Value::Decimal(dec!(-7922816251426433759.3543950335)),
     }
 
+    #[test]
+    /// Regression test for ladybug-rust#50: elements whose own type does not
+    /// match the declared child type of a `List` or `Array` must fail the
+    /// conversion instead of being stored, because the engine reinterprets
+    /// each element at the declared width and silently truncates it.
+    fn list_and_array_child_type_mismatch_returns_error() {
+        let cases: Vec<Value> = vec![
+            // The C3 reproductions: wide elements under a narrower declared type.
+            Value::List(LogicalType::Int32, vec![Value::Int64(4294967301)]),
+            Value::Array(
+                LogicalType::Int16,
+                vec![Value::Int64(70000), Value::Int64(-70000)],
+            ),
+            // Heterogeneous elements.
+            Value::List(
+                LogicalType::Int64,
+                vec![Value::Int64(1), Value::String("x".to_string())],
+            ),
+            // A nested list whose own declared child type mismatches.
+            Value::List(
+                LogicalType::List {
+                    child_type: Box::new(LogicalType::Int32),
+                },
+                vec![Value::List(LogicalType::Int64, vec![Value::Int64(1)])],
+            ),
+            // A decimal whose derived precision exceeds the declared precision.
+            Value::List(
+                LogicalType::Decimal {
+                    precision: 2,
+                    scale: 2,
+                },
+                vec![Value::Decimal(dec!(123.45))],
+            ),
+        ];
+        for value in cases {
+            let result: Result<cxx::UniquePtr<ffi::Value>, _> = value.clone().try_into();
+            assert!(result.is_err(), "expected error for {value:?}, got Ok");
+        }
+    }
+
+    #[test]
+    /// Elements matching the declared child type (including a decimal that
+    /// fits a wider declared precision at the same scale) convert and
+    /// round-trip unchanged.
+    fn list_and_array_child_type_match_round_trips() -> Result<()> {
+        let cases: Vec<Value> = vec![
+            Value::List(LogicalType::Int32, vec![Value::Int32(5)]),
+            Value::Array(LogicalType::Int16, vec![Value::Int16(7), Value::Int16(-7)]),
+            Value::List(
+                LogicalType::Decimal {
+                    precision: 10,
+                    scale: 2,
+                },
+                vec![Value::Decimal(dec!(1.50))],
+            ),
+            Value::List(LogicalType::String, vec![]),
+        ];
+        for value in cases {
+            let ffi_value: cxx::UniquePtr<ffi::Value> = value.clone().try_into()?;
+            let read_back: Value = ffi_value.as_ref().unwrap().try_into()?;
+            assert_eq!(read_back, value);
+        }
+        Ok(())
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#50: binding a mismatched list into a
+    /// typed column must fail at execute time; before the fix the insert
+    /// succeeded and the stored element was silently truncated
+    /// (4294967301 was read back as 5).
+    fn list_mismatched_child_type_fails_insert() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query("CREATE NODE TABLE T(id INT64, item INT32[], PRIMARY KEY(id));")?;
+        let mut stmt = conn.prepare("CREATE (:T {id: $id, item: $item});")?;
+        let result = conn.execute(
+            &mut stmt,
+            vec![
+                ("id", 1i64.into()),
+                (
+                    "item",
+                    Value::List(LogicalType::Int32, vec![Value::Int64(4294967301)]),
+                ),
+            ],
+        );
+        assert!(result.is_err(), "expected execute to fail, got {result:?}");
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#52: a parameter-bound `Value::Union`
+    /// must be stored in a form the engine can read back. Before the fix the
+    /// stored value was malformed and rendering it with
+    /// `CAST(t.u AS STRING)` crashed the process, even when the payload
+    /// matched a declared member exactly.
+    fn union_parameter_stores_and_renders() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query(
+            "CREATE NODE TABLE T(id INT64, u UNION(num INT32, str STRING), PRIMARY KEY(id));",
+        )?;
+        let types = vec![
+            ("num".to_string(), LogicalType::Int32),
+            ("str".to_string(), LogicalType::String),
+        ];
+        let mut stmt = conn.prepare("CREATE (:T {id: $id, u: $u});")?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", 1i64.into()),
+                (
+                    "u",
+                    Value::Union {
+                        types: types.clone(),
+                        value: Box::new(Value::Int32(7)),
+                    },
+                ),
+            ],
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", 2i64.into()),
+                (
+                    "u",
+                    Value::Union {
+                        types,
+                        value: Box::new(Value::String("aa".to_string())),
+                    },
+                ),
+            ],
+        )?;
+        // The engine's own render of the stored values: this is the read
+        // that segfaulted before the fix.
+        let renders: Vec<Value> = conn
+            .query("MATCH (a:T) RETURN CAST(a.u AS STRING) ORDER BY a.id;")?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|row| row.into_iter().next().unwrap())
+            .collect();
+        assert_eq!(
+            renders,
+            vec![
+                Value::String("7".to_string()),
+                Value::String("aa".to_string())
+            ]
+        );
+        // Direct read-back returns the payloads under the declared members.
+        let rows: Vec<Vec<Value>> = conn
+            .query("MATCH (a:T) RETURN a.u ORDER BY a.id;")?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (row, expected) in rows
+            .iter()
+            .zip([Value::Int32(7), Value::String("aa".to_string())])
+        {
+            match &row[0] {
+                Value::Union { value, .. } => assert_eq!(**value, expected),
+                other => panic!("expected union value, got {other:?}"),
+            }
+        }
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#52: a union payload that matches no
+    /// declared member (including a wider integer than the declared member)
+    /// must fail the conversion instead of being stored malformed.
+    fn union_non_member_payload_returns_error() {
+        let types = vec![
+            ("num".to_string(), LogicalType::Int32),
+            ("str".to_string(), LogicalType::String),
+        ];
+        for payload in [Value::Int64(4294967301), Value::Int8(3)] {
+            let value = Value::Union {
+                types: types.clone(),
+                value: Box::new(payload),
+            };
+            let result: Result<cxx::UniquePtr<ffi::Value>, _> = value.try_into();
+            assert!(result.is_err(), "expected error, got Ok");
+        }
+    }
+
     database_tests! {
-        // Passing these values as arguments is not yet implemented in lbug:
-        // db_union: Value::Union {
-        //    types: vec![("Num".to_string(), LogicalType::Int8), ("duration".to_string(), LogicalType::Interval)],
-        //    value: Box::new(Value::Int8(-127))
-        // }, "UNION(Num INT8, duration INTERVAL)",
+        // Union parameters work since the layout fix in ladybug-rust#52.
+        db_union: Value::Union {
+           types: vec![("Num".to_string(), LogicalType::Int8), ("duration".to_string(), LogicalType::Interval)],
+           value: Box::new(Value::Int8(-127))
+        }, "UNION(Num INT8, duration INTERVAL)",
         db_list_string: Value::List(LogicalType::String, vec!["Alice".into(), "Bob".into()]), "STRING[]",
         db_list_int: Value::List(LogicalType::Int64, vec![0i64.into(), 1i64.into(), 2i64.into()]), "INT64[]",
         db_map: Value::Map((LogicalType::String, LogicalType::Int64), vec![(Value::String("key".to_string()), Value::Int64(24))]), "MAP(STRING,INT64)",
