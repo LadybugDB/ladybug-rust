@@ -20,6 +20,9 @@ pub enum ConversionError {
     /// Lbug's internal decimal as its scaled integer and scale, when it
     /// exceeds what `rust_decimal` can represent
     Decimal(i128, u32, rust_decimal::Error),
+    /// A `time::Duration` whose whole days do not fit in the 32-bit day field
+    /// of Lbug's internal interval representation
+    Interval(i64),
 }
 
 impl std::fmt::Display for ConversionError {
@@ -31,7 +34,8 @@ impl std::fmt::Display for ConversionError {
 impl std::fmt::Debug for ConversionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use ConversionError::{
-            Date, Decimal, Json, Timestamp, TimestampMs, TimestampNs, TimestampSec, TimestampTz,
+            Date, Decimal, Interval, Json, Timestamp, TimestampMs, TimestampNs, TimestampSec,
+            TimestampTz,
         };
         match self {
             Date(days) => write!(f, "Could not convert Lbug date offset of UNIX_EPOCH + {days} days to time::Date"),
@@ -45,6 +49,7 @@ impl std::fmt::Debug for ConversionError {
                 f,
                 "Could not convert Lbug decimal value {value} with scale {scale} to rust_decimal::Decimal: {err}"
             ),
+            Interval(days) => write!(f, "Could not convert time::Duration with {days} whole days to an Lbug interval: the day count is outside the range of the 32-bit day field"),
         }
     }
 }
@@ -236,6 +241,11 @@ pub enum Value {
     ///
     /// Nanosecond precision of `time::Duration` (if available) will not be preserved when passed to
     /// queries, and results will always have at most microsecond precision.
+    ///
+    /// The duration is stored as whole days plus a sub-day microsecond remainder, with no month
+    /// component, so the stored interval has the same fixed length as the duration. Durations
+    /// whose whole days do not fit in the engine's 32-bit day field (roughly ±5.9 million years)
+    /// fail conversion with `ConversionError::Interval` instead of being stored.
     ///
     /// <https://ladybugdb.com/docusaurus/cypher/data-types/interval.html>
     Interval(time::Duration),
@@ -747,20 +757,24 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 .expect("timestamp i128->i64 overflow")
         }
 
-        fn get_interval_t(value: time::Duration) -> (i32, i32, i64) {
+        fn get_interval_t(value: time::Duration) -> Result<(i32, i32, i64), ConversionError> {
             use time::Duration;
-            let mut interval = value;
-            let months = interval.whole_days() / 30;
-            interval -= Duration::days(months * 30);
-            let days = interval.whole_days();
-            interval -= Duration::days(days);
-            let months = months.to_i32().expect("months i64->i32 overflow");
-            let days = days.to_i32().expect("days i64->i32 overflow");
-            let micros = interval
+            // A `time::Duration` is a fixed length of time, while the engine
+            // applies the month field of an interval calendrically. Store the
+            // duration as whole days plus a sub-day microsecond remainder
+            // with a zero month field, so the stored interval has the same
+            // length as the duration (ladybug-rust#49). Decomposing into
+            // 30-day months changed the semantics of the stored value.
+            let days = value.whole_days();
+            let days_i32 = days.to_i32().ok_or(ConversionError::Interval(days))?;
+            let remainder = value - Duration::days(days);
+            // The remainder is smaller than one day, so its microsecond count
+            // always fits in an i64.
+            let micros = remainder
                 .whole_microseconds()
                 .to_i64()
                 .expect("micros i128->i64 overflow");
-            (months, days, micros)
+            Ok((0, days_i32, micros))
         }
 
         match self {
@@ -824,7 +838,7 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
             )),
             Value::Date(value) => Ok(ffi::create_value_date(date_to_lbug_date_t(value))),
             Value::Interval(value) => {
-                let (months, days, micros) = get_interval_t(value);
+                let (months, days, micros) = get_interval_t(value)?;
                 Ok(ffi::create_value_interval(months, days, micros))
             }
             Value::List(typ, value) => {
@@ -1225,6 +1239,104 @@ mod tests {
         display_decimal128: Value::Decimal(dec!(12.34567890)),
         display_decimal_negative: Value::Decimal(dec!(-12345678.123456)),
         display_decimal_negative_large: Value::Decimal(dec!(-7922816251426433759.3543950335)),
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#49 (C2): a `time::Duration` is a fixed
+    /// length of time, so it must be stored as days and microseconds with no
+    /// month component. Decomposing it into 30-day months made the engine
+    /// apply the stored value calendrically, so a bound 31-day interval
+    /// behaved differently from the engine's own 31-day interval.
+    fn interval_duration_is_stored_as_days_not_months() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query("CREATE NODE TABLE T(id INT64, i INTERVAL, PRIMARY KEY(id));")?;
+        let mut stmt = conn.prepare("CREATE (:T {id: $id, i: $i});")?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", 1i64.into()),
+                ("i", Value::Interval(time::Duration::days(31))),
+            ],
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", 2i64.into()),
+                ("i", Value::Interval(time::Duration::days(-31))),
+            ],
+        )?;
+        let render = |id: i64| -> Result<String> {
+            let result = conn
+                .query(&format!(
+                    "MATCH (a:T) WHERE a.id = {id} RETURN CAST(a.i AS STRING);"
+                ))?
+                .next()
+                .unwrap()?;
+            match &result[0] {
+                Value::String(s) => Ok(s.clone()),
+                other => panic!("expected string render, got {other:?}"),
+            }
+        };
+        assert_eq!(render(1)?, "31 days");
+        assert_eq!(render(2)?, "-31 days");
+        // Date arithmetic must agree with the engine's own 31-day interval:
+        // 2023-01-31 + 31 days = 2023-03-03 (not 2023-03-01 via 1 month 1 day).
+        let result = conn
+            .query(
+                "MATCH (a:T) WHERE a.id = 1 \
+                 RETURN CAST('2023-01-31' AS DATE) + a.i;",
+            )?
+            .next()
+            .unwrap()?;
+        assert_eq!(result[0], Value::Date(date!(2023 - 03 - 03)));
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#49 (C4): durations whose whole days do
+    /// not fit the engine's i32 day field must return an error from the
+    /// conversion, not panic.
+    fn interval_huge_duration_returns_error() {
+        for value in [
+            time::Duration::MAX,
+            time::Duration::MIN,
+            time::Duration::days(100_000_000_000),
+            time::Duration::days(-100_000_000_000),
+        ] {
+            let rust_value = Value::Interval(value);
+            let result: Result<cxx::UniquePtr<ffi::Value>, _> = rust_value.try_into();
+            assert!(result.is_err(), "expected error for {value}, got Ok");
+        }
+    }
+
+    #[test]
+    /// The largest representable durations (i32 days, plus a sub-day
+    /// remainder) must still convert and round-trip exactly.
+    fn interval_day_boundaries_round_trip() -> Result<()> {
+        for value in [
+            time::Duration::days(i64::from(i32::MAX)),
+            time::Duration::days(i64::from(i32::MIN)),
+            time::Duration::days(31) + time::Duration::microseconds(1500),
+            time::Duration::hours(-25),
+        ] {
+            let rust_value = Value::Interval(value);
+            let ffi_value: cxx::UniquePtr<ffi::Value> = rust_value.clone().try_into()?;
+            let read_back: Value = ffi_value.as_ref().unwrap().try_into()?;
+            assert_eq!(read_back, rust_value);
+        }
+        // One day past the boundary must error, in both directions.
+        for value in [
+            time::Duration::days(i64::from(i32::MAX) + 1),
+            time::Duration::days(i64::from(i32::MIN) - 1),
+        ] {
+            let rust_value = Value::Interval(value);
+            let result: Result<cxx::UniquePtr<ffi::Value>, _> = rust_value.try_into();
+            assert!(result.is_err(), "expected error for {value}, got Ok");
+        }
+        Ok(())
     }
 
     database_tests! {
