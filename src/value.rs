@@ -741,8 +741,11 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
         }
 
         fn datetime_to_timestamp_t(value: time::OffsetDateTime) -> i64 {
-            // Convert to microseconds since 1970-01-01
-            (value.unix_timestamp_nanos() / 1000)
+            // Convert to microseconds since 1970-01-01. Floor division (not
+            // truncation toward zero) so that pre-epoch instants with a
+            // sub-microsecond fraction round to the previous microsecond,
+            // matching the engine's own cast behaviour (ladybug-rust#48).
+            (value.unix_timestamp_nanos().div_euclid(1000))
                 .to_i64()
                 .expect("timestamp i128->i64 overflow")
         }
@@ -801,8 +804,9 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 Ok(ffi::create_value_timestamp(datetime_to_timestamp_t(value)))
             }
             Value::TimestampTz(value) => Ok(ffi::create_value_timestamp_tz(
-                // Convert to microseconds since 1970-01-01
-                (value.unix_timestamp_nanos() / 1000)
+                // Convert to microseconds since 1970-01-01, flooring like
+                // `datetime_to_timestamp_t` (ladybug-rust#48).
+                (value.unix_timestamp_nanos().div_euclid(1000))
                     .to_i64()
                     .expect("TimestampTz i128->i64 overflow"),
             )),
@@ -1225,6 +1229,74 @@ mod tests {
         display_decimal128: Value::Decimal(dec!(12.34567890)),
         display_decimal_negative: Value::Decimal(dec!(-12345678.123456)),
         display_decimal_negative_large: Value::Decimal(dec!(-7922816251426433759.3543950335)),
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#48 (C5): pre-epoch `Timestamp` and
+    /// `TimestampTz` values with a sub-microsecond fraction must floor to the
+    /// previous microsecond when converted to the engine's microsecond
+    /// representation, matching the engine's own cast behaviour, instead of
+    /// truncating toward zero (which moved -1ns to the epoch).
+    fn timestamp_pre_epoch_sub_microsecond_floors() -> Result<()> {
+        let epoch = time::OffsetDateTime::UNIX_EPOCH;
+        let cases = [
+            (
+                time::Duration::nanoseconds(-1),
+                time::Duration::microseconds(-1),
+            ),
+            (
+                time::Duration::nanoseconds(-1000),
+                time::Duration::microseconds(-1),
+            ),
+            (
+                time::Duration::nanoseconds(-1001),
+                time::Duration::microseconds(-2),
+            ),
+            (
+                time::Duration::nanoseconds(1999),
+                time::Duration::microseconds(1),
+            ),
+            (
+                time::Duration::nanoseconds(0),
+                time::Duration::microseconds(0),
+            ),
+        ];
+        for (offset, expected_offset) in cases {
+            let value = Value::Timestamp(epoch + offset);
+            let ffi_value: cxx::UniquePtr<ffi::Value> = value.try_into()?;
+            let read_back: Value = ffi_value.as_ref().unwrap().try_into()?;
+            assert_eq!(read_back, Value::Timestamp(epoch + expected_offset));
+
+            let value_tz = Value::TimestampTz(epoch + offset);
+            let ffi_value_tz: cxx::UniquePtr<ffi::Value> = value_tz.try_into()?;
+            let read_back_tz: Value = ffi_value_tz.as_ref().unwrap().try_into()?;
+            assert_eq!(read_back_tz, Value::TimestampTz(epoch + expected_offset));
+        }
+        Ok(())
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#48 (C5): a bound pre-epoch timestamp
+    /// must be stored as the floored microsecond value, so the stored value
+    /// matches what the engine itself produces for the same instant.
+    fn timestamp_pre_epoch_sub_microsecond_db_round_trip() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query("CREATE NODE TABLE T(id INT64, ts TIMESTAMP, PRIMARY KEY(id));")?;
+        let mut stmt = conn.prepare("CREATE (:T {id: $id, ts: $ts});")?;
+        let minus_one_ns = time::OffsetDateTime::UNIX_EPOCH - time::Duration::nanoseconds(1);
+        conn.execute(
+            &mut stmt,
+            vec![("id", 1i64.into()), ("ts", Value::Timestamp(minus_one_ns))],
+        )?;
+        let result = conn.query("MATCH (a:T) RETURN a.ts;")?.next().unwrap()?;
+        assert_eq!(
+            result[0],
+            Value::Timestamp(time::OffsetDateTime::UNIX_EPOCH - time::Duration::microseconds(1))
+        );
+        temp_dir.close()?;
+        Ok(())
     }
 
     database_tests! {
