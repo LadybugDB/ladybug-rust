@@ -20,6 +20,10 @@ pub enum ConversionError {
     /// Lbug's internal decimal as its scaled integer and scale, when it
     /// exceeds what `rust_decimal` can represent
     Decimal(i128, u32, rust_decimal::Error),
+    /// A nested value whose own type (second) does not match the declared
+    /// type it would be stored under (first): a list or array element, a map
+    /// key or value, or a union payload
+    TypeMismatch(LogicalType, LogicalType),
 }
 
 impl std::fmt::Display for ConversionError {
@@ -32,6 +36,7 @@ impl std::fmt::Debug for ConversionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use ConversionError::{
             Date, Decimal, Json, Timestamp, TimestampMs, TimestampNs, TimestampSec, TimestampTz,
+            TypeMismatch,
         };
         match self {
             Date(days) => write!(f, "Could not convert Lbug date offset of UNIX_EPOCH + {days} days to time::Date"),
@@ -44,6 +49,10 @@ impl std::fmt::Debug for ConversionError {
             Decimal(value, scale, err) => write!(
                 f,
                 "Could not convert Lbug decimal value {value} with scale {scale} to rust_decimal::Decimal: {err}"
+            ),
+            TypeMismatch(declared, actual) => write!(
+                f,
+                "Value of type {actual:?} does not match the declared type {declared:?} it would be stored under"
             ),
         }
     }
@@ -721,6 +730,38 @@ impl TryFrom<&ffi::Value> for Value {
     }
 }
 
+/// Checks that a nested `value` may be stored under `declared`, the type a
+/// caller declared for it (a list or array element type, a map key or value
+/// type, or a union member type).
+///
+/// The engine stores nested values under the declared type and reinterprets
+/// each element at that type's width, so a mismatch silently corrupts data
+/// at storage time (ladybug-rust#50, #51, #52); the binding is the only
+/// layer that can reject it. Types must match exactly, except that a decimal
+/// value may be stored under a declared decimal type with the same scale
+/// and at least the value's precision, which is exact.
+fn check_nested_type(declared: &LogicalType, value: &Value) -> Result<(), ConversionError> {
+    let actual: LogicalType = value.into();
+    let compatible = match (declared, &actual) {
+        (
+            LogicalType::Decimal {
+                precision: declared_precision,
+                scale: declared_scale,
+            },
+            LogicalType::Decimal {
+                precision: actual_precision,
+                scale: actual_scale,
+            },
+        ) => declared_scale == actual_scale && actual_precision <= declared_precision,
+        _ => *declared == actual,
+    };
+    if compatible {
+        Ok(())
+    } else {
+        Err(ConversionError::TypeMismatch(declared.clone(), actual))
+    }
+}
+
 impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
     // Errors should occur if:
     // - types are heterogeneous in lists
@@ -828,6 +869,9 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 Ok(ffi::create_value_interval(months, days, micros))
             }
             Value::List(typ, value) => {
+                for elem in &value {
+                    check_nested_type(&typ, elem)?;
+                }
                 let mut builder = ffi::create_list();
                 for elem in value {
                     ffi::value_list_insert(builder.pin_mut(), elem.try_into()?);
@@ -865,6 +909,9 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 ))
             }
             Value::Array(typ, value) => {
+                for elem in &value {
+                    check_nested_type(&typ, elem)?;
+                }
                 let mut builder = ffi::create_list();
                 let len = value.len();
                 for elem in value {
@@ -1225,6 +1272,97 @@ mod tests {
         display_decimal128: Value::Decimal(dec!(12.34567890)),
         display_decimal_negative: Value::Decimal(dec!(-12345678.123456)),
         display_decimal_negative_large: Value::Decimal(dec!(-7922816251426433759.3543950335)),
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#50: elements whose own type does not
+    /// match the declared child type of a `List` or `Array` must fail the
+    /// conversion instead of being stored, because the engine reinterprets
+    /// each element at the declared width and silently truncates it.
+    fn list_and_array_child_type_mismatch_returns_error() {
+        let cases: Vec<Value> = vec![
+            // The C3 reproductions: wide elements under a narrower declared type.
+            Value::List(LogicalType::Int32, vec![Value::Int64(4294967301)]),
+            Value::Array(
+                LogicalType::Int16,
+                vec![Value::Int64(70000), Value::Int64(-70000)],
+            ),
+            // Heterogeneous elements.
+            Value::List(
+                LogicalType::Int64,
+                vec![Value::Int64(1), Value::String("x".to_string())],
+            ),
+            // A nested list whose own declared child type mismatches.
+            Value::List(
+                LogicalType::List {
+                    child_type: Box::new(LogicalType::Int32),
+                },
+                vec![Value::List(LogicalType::Int64, vec![Value::Int64(1)])],
+            ),
+            // A decimal whose derived precision exceeds the declared precision.
+            Value::List(
+                LogicalType::Decimal {
+                    precision: 2,
+                    scale: 2,
+                },
+                vec![Value::Decimal(dec!(123.45))],
+            ),
+        ];
+        for value in cases {
+            let result: Result<cxx::UniquePtr<ffi::Value>, _> = value.clone().try_into();
+            assert!(result.is_err(), "expected error for {value:?}, got Ok");
+        }
+    }
+
+    #[test]
+    /// Elements matching the declared child type (including a decimal that
+    /// fits a wider declared precision at the same scale) convert and
+    /// round-trip unchanged.
+    fn list_and_array_child_type_match_round_trips() -> Result<()> {
+        let cases: Vec<Value> = vec![
+            Value::List(LogicalType::Int32, vec![Value::Int32(5)]),
+            Value::Array(LogicalType::Int16, vec![Value::Int16(7), Value::Int16(-7)]),
+            Value::List(
+                LogicalType::Decimal {
+                    precision: 10,
+                    scale: 2,
+                },
+                vec![Value::Decimal(dec!(1.50))],
+            ),
+            Value::List(LogicalType::String, vec![]),
+        ];
+        for value in cases {
+            let ffi_value: cxx::UniquePtr<ffi::Value> = value.clone().try_into()?;
+            let read_back: Value = ffi_value.as_ref().unwrap().try_into()?;
+            assert_eq!(read_back, value);
+        }
+        Ok(())
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#50: binding a mismatched list into a
+    /// typed column must fail at execute time; before the fix the insert
+    /// succeeded and the stored element was silently truncated
+    /// (4294967301 was read back as 5).
+    fn list_mismatched_child_type_fails_insert() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query("CREATE NODE TABLE T(id INT64, item INT32[], PRIMARY KEY(id));")?;
+        let mut stmt = conn.prepare("CREATE (:T {id: $id, item: $item});")?;
+        let result = conn.execute(
+            &mut stmt,
+            vec![
+                ("id", 1i64.into()),
+                (
+                    "item",
+                    Value::List(LogicalType::Int32, vec![Value::Int64(4294967301)]),
+                ),
+            ],
+        );
+        assert!(result.is_err(), "expected execute to fail, got {result:?}");
+        temp_dir.close()?;
+        Ok(())
     }
 
     database_tests! {
