@@ -885,6 +885,10 @@ impl TryInto<cxx::UniquePtr<ffi::Value>> for Value {
                 ))
             }
             Value::Map((key_type, value_type), values) => {
+                for (key, value) in &values {
+                    check_nested_type(&key_type, key)?;
+                    check_nested_type(&value_type, value)?;
+                }
                 let mut builder = ffi::create_list();
                 let list_type = LogicalType::Struct {
                     fields: vec![
@@ -1357,6 +1361,66 @@ mod tests {
                 (
                     "item",
                     Value::List(LogicalType::Int32, vec![Value::Int64(4294967301)]),
+                ),
+            ],
+        );
+        assert!(result.is_err(), "expected execute to fail, got {result:?}");
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#51: map keys and values whose own
+    /// types do not match the declared key and value types must fail the
+    /// conversion instead of being stored, because the engine reinterprets
+    /// them at the declared width and silently truncates them.
+    fn map_key_and_value_type_mismatch_returns_error() {
+        let cases: Vec<Value> = vec![
+            // The C7 value reproduction: wide values under a narrower
+            // declared value type (4294967301 was stored as 5).
+            Value::Map(
+                (LogicalType::String, LogicalType::Int32),
+                vec![
+                    (Value::String("wide".to_string()), Value::Int64(4294967301)),
+                    (Value::String("small".to_string()), Value::Int64(7)),
+                ],
+            ),
+            // The C7 key reproduction: two distinct keys that collide at the
+            // declared width (both were stored as 5, with no deduplication).
+            Value::Map(
+                (LogicalType::Int32, LogicalType::String),
+                vec![
+                    (Value::Int64(4294967301), Value::String("wide".to_string())),
+                    (Value::Int64(5), Value::String("five".to_string())),
+                ],
+            ),
+        ];
+        for value in cases {
+            let result: Result<cxx::UniquePtr<ffi::Value>, _> = value.clone().try_into();
+            assert!(result.is_err(), "expected error for {value:?}, got Ok");
+        }
+    }
+
+    #[test]
+    /// Regression test for ladybug-rust#51: binding a mismatched map into a
+    /// typed column must fail at execute time; before the fix the insert
+    /// succeeded and the stored values were silently truncated.
+    fn map_mismatched_types_fail_insert() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("testdb"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query("CREATE NODE TABLE T(id INT64, item MAP(STRING, INT32), PRIMARY KEY(id));")?;
+        let mut stmt = conn.prepare("CREATE (:T {id: $id, item: $item});")?;
+        let result = conn.execute(
+            &mut stmt,
+            vec![
+                ("id", 1i64.into()),
+                (
+                    "item",
+                    Value::Map(
+                        (LogicalType::String, LogicalType::Int32),
+                        vec![(Value::String("wide".to_string()), Value::Int64(4294967301))],
+                    ),
                 ),
             ],
         );
