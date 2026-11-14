@@ -323,6 +323,70 @@ mod tests {
     }
 
     #[test]
+    fn query_result_out_of_range_date_error_row_is_consumed_and_iteration_continues(
+    ) -> anyhow::Result<()> {
+        // Regression test for ladybug-rust#48 (C1): the engine stores DATE as
+        // i32 days, a wider range than time::Date supports. Reading a stored
+        // out-of-range date must yield an error row, not panic the iterator.
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("test"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        conn.query("CREATE NODE TABLE T(id INT64, d DATE, PRIMARY KEY(id));")?;
+        conn.query("CREATE (:T {id: 1, d: CAST('2020-06-15' AS DATE)});")?;
+        conn.query("CREATE (:T {id: 2, d: CAST('10000-06-15' AS DATE)});")?;
+        conn.query("CREATE (:T {id: 3, d: CAST('2021-06-15' AS DATE)});")?;
+        let mut result = conn.query("MATCH (a:T) RETURN a.d ORDER BY a.id;")?;
+        match result.next() {
+            Some(Ok(row)) => {
+                assert_eq!(row[0], Value::Date(time::macros::date!(2020 - 06 - 15)))
+            }
+            other => panic!("expected Ok row for in-range date, got {other:?}"),
+        }
+        match result.next() {
+            Some(Err(ConversionError::Date(days))) => {
+                // 10000-06-15 is 2933063 days after the Unix epoch.
+                assert_eq!(days, 2_933_063);
+            }
+            other => panic!("expected Date conversion error row, got {other:?}"),
+        }
+        match result.next() {
+            Some(Ok(row)) => {
+                assert_eq!(row[0], Value::Date(time::macros::date!(2021 - 06 - 15)))
+            }
+            other => panic!("expected Ok row after the error row, got {other:?}"),
+        }
+        assert!(result.next().is_none());
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn query_result_out_of_range_timestamps_yield_error_rows() -> anyhow::Result<()> {
+        // Regression test for ladybug-rust#48 (C1): TIMESTAMP, TIMESTAMP_TZ,
+        // TIMESTAMP_MS and TIMESTAMP_SEC share the DATE defect: engine values
+        // beyond the time crate's range must surface as error rows.
+        let temp_dir = tempfile::tempdir()?;
+        let db = Database::new(temp_dir.path().join("test"), SYSTEM_CONFIG_FOR_TESTS)?;
+        let conn = Connection::new(&db)?;
+        let cases = [
+            "RETURN CAST('10000-01-01 00:00:00' AS TIMESTAMP);",
+            "RETURN CAST('10000-01-01 00:00:00' AS TIMESTAMP_TZ);",
+            "RETURN CAST('10000-01-01 00:00:00' AS TIMESTAMP_MS);",
+            "RETURN CAST('10000-01-01 00:00:00' AS TIMESTAMP_SEC);",
+        ];
+        for query in cases {
+            let mut result = conn.query(query)?;
+            match result.next() {
+                Some(Err(_)) => {}
+                other => panic!("expected conversion error row for {query}, got {other:?}"),
+            }
+            assert!(result.next().is_none(), "expected single row for {query}");
+        }
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
     fn test_query_result_move() -> anyhow::Result<()> {
         let temp_dir = tempfile::tempdir()?;
         let db = Database::new(temp_dir.path().join("test"), SYSTEM_CONFIG_FOR_TESTS)?;
